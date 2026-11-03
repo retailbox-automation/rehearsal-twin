@@ -48,5 +48,13 @@ check "env file root-only" "600 root" "$(run 'stat -c "%a %U" /etc/rt/env')"
 check "service user" "User=rt" "$(run 'systemctl show rt-api -p User')"
 check "uvicorn bound to loopback only" "127.0.0.1:8000" "$(run "ss -ltnH | awk '{print \$4}' | grep ':8000\$'")"
 check "data dir private to rt" "700 rt" "$(run 'stat -c "%a %U" /var/lib/rt')"
+check "reaper timer active" "active" "$(run 'systemctl is-active rt-reaper.timer')"
+check "reset timer active" "active" "$(run 'systemctl is-active rt-prod-reset.timer')"
+run 'systemctl start rt-reaper.service' >/dev/null 2>&1 || true
+check "reaper: one journal line per tick (no API key here: an error line)" "1" \
+  "$(run "journalctl -u rt-reaper.service -o cat --no-pager | grep -c '\"tick\": \"reap\"'")"
+run 'systemctl start rt-prod-reset.service' >/dev/null 2>&1 || true
+check "reset: one journal line per tick (no token here: an error line)" "1" \
+  "$(run "journalctl -u rt-prod-reset.service -o cat --no-pager | grep -c '\"tick\": \"restore\"'")"
 echo "RESULT fails=$fails"
 [ "$fails" -eq 0 ]

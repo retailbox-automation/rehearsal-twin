@@ -194,7 +194,7 @@
     try {
       const q = await (await fetch("/api/queue")).json();
       const mine = q.waiting.find((w) => w.id === state.r.id);
-      let line = `queue \u00b7 ${q.running.length} running \u00b7 ${q.waiting.length} waiting \u00b7 ${q.cap} twins at a time`;
+      let line = `queue \u00b7 ${q.running.length} running \u00b7 ${q.waiting.length} waiting \u00b7 ${q.cap} ${q.cap === 1 ? "twin" : "twins"} at a time`;
       if (mine) line += ` \u00b7 this run is #${mine.position}`;
       if (q.judge && q.judge.mode === "on") line += ` \u00b7 runs today ${q.judge.runs_today}/${q.judge.daily_budget}`;
       $("queue").textContent = line;

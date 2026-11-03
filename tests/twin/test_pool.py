@@ -101,3 +101,23 @@ def test_close_destroys_all_and_stops_refill():
     assert all(t.destroyed for t in made)
     pool.fill()
     assert len(made) == 2
+
+
+def test_twin_factory_makes_ready_twin(fake, client, ssh):
+    from rt.twin.pool import twin_factory
+
+    make = twin_factory("snap-1", "vpc-1", "vc2-1c-1gb", client=client, ssh_factory=lambda: ssh)
+    twin = make()
+    assert twin.host == "10.77.0.21"
+    body = fake.calls("POST", "/v2/instances")[0]["body"]
+    assert body["plan"] == "vc2-1c-1gb" and "rt-twin" in body["tags"]
+
+
+def test_twin_factory_cleans_up_failed_twin(fake, client, ssh):
+    from rt.twin.pool import twin_factory
+
+    fake.public_ip_on_create = True
+    make = twin_factory("snap-1", "vpc-1", "vc2-1c-1gb", client=client, ssh_factory=lambda: ssh)
+    with pytest.raises(Exception, match="public"):
+        make()
+    assert fake.instances == {}

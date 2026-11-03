@@ -64,3 +64,14 @@ def test_bench_refuses_large_n(fake, client, ssh, tmp_path):
         main(["bench", "--n", "50", "--snapshot", "s", "--vpc", "v", "--out", str(tmp_path / "b.json")],
              client=client, ssh=ssh, out=io.StringIO())
     assert fake.calls("POST") == []
+
+
+def test_bench_records_failure_and_still_destroys(fake, client, ssh, tmp_path):
+    fake.public_ip_on_create = True
+    dest = tmp_path / "b.json"
+    rc = main(["bench", "--n", "1", "--snapshot", "s", "--vpc", "vpc-1", "--out", str(dest)],
+              client=client, ssh=ssh, out=io.StringIO())
+    assert rc == 1
+    o = json.loads(dest.read_text())["observations"][0]
+    assert "public" in o["error"] and o["absent"] is True
+    assert fake.instances == {}

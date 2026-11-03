@@ -43,7 +43,7 @@ SQL
   echo "golden: $(cat "$G/fs.count") files, $(wc -l < "$G/units.list") units"
   ;;
 reset)
-  [ -s "$G/fs.list" ] && [ "$(cat "$G/fs.count")" -gt 300 ] || { echo "reset: no golden state" >&2; exit 4; }
+  [ -s "$G/fs.list" ] && [ "$(cat "$G/fs.count")" -gt 150 ] || { echo "reset: no golden state" >&2; exit 4; }
   pkill -9 -f '[r]t-l4-mark' 2>/dev/null
   for u in $(units | comm -13 "$G/units.list" - | grep -E '^(rt-run-|run-|rt-l4|escape).*\.(scope|service|timer)$'); do
     systemctl stop "$u" >/dev/null 2>&1

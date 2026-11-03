@@ -27,9 +27,16 @@ def log(ev):
 
 
 def my_addrs():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(("172.29.77.250", 9))
-    v4 = s.getsockname()[0]
+    """Our own v4 (info file only, never used to match traffic) and any v6 address.
+
+    Docker puts the container's own name -> own IP in /etc/hosts, so this needs no route
+    to anywhere (the stand's network is --internal and has no default route at all).
+    """
+    v4 = ""
+    try:
+        v4 = socket.gethostbyname(socket.gethostname())
+    except OSError:
+        pass
     v6 = []
     try:
         with open("/proc/net/if_inet6") as f:

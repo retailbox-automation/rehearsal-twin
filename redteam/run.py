@@ -35,13 +35,14 @@ from redteam import checks  # noqa: E402
 PREFIX = "rt-l4-"
 IMAGE = "rt-l4-prod:local"
 PROD, SINK, NET = "rt-l4-prod", "rt-l4-sink", "rt-l4-net"
-SUBNET, SINK_IP, CONTROL_IP = "172.29.77.0/24", "172.29.77.10", "172.29.77.250"
+SUBNET, SINK_IP, CONTROL_IP, GATEWAY = "172.31.77.0/24", "172.31.77.10", "172.31.77.250", "172.31.77.1"
 WORK = "/opt/rt/work"
 RT = "/opt/rt/bin/rtrace"
 DOCKERFILE = """FROM ubuntu:24.04
 RUN apt-get update -q \\
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \\
-    systemd systemd-sysv dbus procps postgresql auditd iptables openssl curl python3 ca-certificates
+    systemd systemd-sysv dbus procps postgresql auditd iptables iproute2 openssl curl wget \\
+    dnsutils netcat-openbsd iputils-ping python3 ca-certificates
 """
 DEFAULT_SCOPE = {"paths": ["/srv/app/tmp"], "tables": ["sessions"], "hosts": []}
 
@@ -181,6 +182,16 @@ class DockerTarget(Target):
                 break
             time.sleep(1)
         self.guard()
+        # docker --internal gives the subnet a gateway address but no endpoint gets a default
+        # route to it (true isolation): nothing outside 172.31.77.0/24 even reaches the routing
+        # layer, so rt-egress's iptables REDIRECT never fires for a public-looking destination.
+        # A real twin has exactly one interface too (no public IP) but DOES get a default route
+        # from its VPC DHCP even though that gateway cannot forward past the VPC; this route makes
+        # the stand match that: a lookalike destination gets a route, reaches netfilter OUTPUT,
+        # and is redirected locally -- it still can never leave the machine.
+        rc, _, err = self.exec(["ip", "route", "replace", "default", "via", GATEWAY, "dev", "eth0"])
+        if rc != 0:
+            raise RuntimeError("could not install the stand's default route: " + err.strip()[:200])
         env = dict(os.environ, RT_CONTROL_IP=CONTROL_IP)
         p = subprocess.run(["bash", str(REPO / "fixtures/prod/make-userdata.sh")], capture_output=True, env=env,
                            timeout=120)

@@ -97,6 +97,12 @@ def test_iptables_rules_shape():
                    and "--ctstate ESTABLISHED" not in c and "--dport 67" not in c)
     assert not any("NEW" in c or "RELATED" in c for c in flat)
     assert flat[-1].endswith(f"-I OUTPUT 1 -j {egress.OUT_CHAIN}")
+    six = [" ".join(c) for c in egress.ip6tables_up_commands()]
+    nd = [c for c in six if "--icmpv6-type" in c]
+    assert len(nd) == 4 and all(c.endswith("-j ACCEPT") for c in nd)
+    assert six[-2].endswith(f"-A {egress.OUT6_CHAIN} -j DROP")
+    assert not any("ACCEPT" in c for c in six if "--icmpv6-type" not in c and "-o lo" not in c
+                   and "ESTABLISHED" not in c)
     assert any(c.endswith(f"-I OUTPUT 1 -j {egress.NAT_CHAIN}") for c in flat)
     with pytest.raises(ValueError):
         egress._allow_list("not-an-ip")

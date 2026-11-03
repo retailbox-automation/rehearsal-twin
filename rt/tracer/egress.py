@@ -662,7 +662,11 @@ def iptables_up_commands(allow, dns_port: int = DNS_PORT, tcp_port: int = TCP_PO
 def ip6tables_up_commands() -> list:
     f6 = ["ip6tables", "-w"]
     return [f6 + ["-N", OUT6_CHAIN], f6 + ["-A", OUT6_CHAIN, "-o", "lo", "-j", "ACCEPT"],
-            f6 + ["-A", OUT6_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"],
+            f6 + ["-A", OUT6_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"]] + [
+            # Neighbour discovery and multicast listener reports from the kernel itself (router and
+            # neighbour solicitation, advertisement, MLDv2): link-local housekeeping, not egress.
+            f6 + ["-A", OUT6_CHAIN, "-p", "ipv6-icmp", "--icmpv6-type", t, "-j", "ACCEPT"]
+            for t in ("133", "135", "136", "143")] + [
             f6 + ["-A", OUT6_CHAIN, "-j", "DROP"], f6 + ["-I", "OUTPUT", "1", "-j", OUT6_CHAIN]]
 
 
@@ -694,11 +698,13 @@ def iptables_up(allow) -> list:
         if p.returncode != 0:
             raise RuntimeError(f"{' '.join(argv)}: {p.stderr.strip()}")
     warnings = []
-    for argv in ip6tables_up_commands():
+    for i, argv in enumerate(ip6tables_up_commands()):
         p = _run(argv)
         if p.returncode != 0:
-            warnings.append(f"{' '.join(argv)}: {p.stderr.strip()}")
-            break
+            if i == 0:  # no ip6tables here at all: nothing half-built, warn only
+                warnings.append(f"{' '.join(argv)}: {p.stderr.strip()}")
+                break
+            raise RuntimeError(f"{' '.join(argv)}: {p.stderr.strip()}")
     return warnings
 
 

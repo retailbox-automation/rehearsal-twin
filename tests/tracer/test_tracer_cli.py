@@ -19,6 +19,15 @@ def test_self_digest_ignores_work_state_certs_and_bytecode(tmp_path):
     assert cli.self_digest(cfg) != d0
 
 
+def test_route_lifetimes_do_not_count_as_changes():
+    a = ("default via fe80::1 dev enp1s0 proto ra metric 100 expires 26sec hoplimit 64 pref medium\n"
+         "10.77.0.0/24 dev enp1s0 proto kernel scope link src 10.77.0.5 metric 100\n")
+    b = a.replace("expires 26sec", "expires 23sec")
+    assert cli.normalize_routes(a) == cli.normalize_routes(b)
+    c = a.replace("10.77.0.0/24", "10.78.0.0/24")
+    assert cli.normalize_routes(a) != cli.normalize_routes(c)
+
+
 def test_tracked_roots_add_declared_paths_outside_defaults():
     cfg = {"track_roots": ["/srv", "/etc"]}
     assert cli.tracked_roots(cfg, None) == ["/srv", "/etc"]

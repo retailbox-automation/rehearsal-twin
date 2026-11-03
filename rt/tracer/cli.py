@@ -14,6 +14,7 @@ import argparse
 import datetime as _dt
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -52,6 +53,14 @@ def iptables_state() -> dict:
     return {"rules_sha256": egress.rules_digest(), "counters": egress.counters()}
 
 
+_EXPIRES = re.compile(r"\s+expires\s+-?\d+sec")
+
+
+def normalize_routes(text: str) -> str:
+    """Route listing without the lifetimes that count down on their own (router advertisements)."""
+    return "\n".join(_EXPIRES.sub("", line).rstrip() for line in text.splitlines())
+
+
 def routes_digest() -> str | None:
     """Digest of every routing table (IPv4 and IPv6); None when it cannot be read."""
     import hashlib
@@ -64,7 +73,7 @@ def routes_digest() -> str | None:
             continue
         if p.returncode == 0:
             ok = True
-            h.update(p.stdout.encode())
+            h.update(normalize_routes(p.stdout).encode())
     if not ok:
         try:
             with open("/proc/net/route", encoding="utf-8") as f:

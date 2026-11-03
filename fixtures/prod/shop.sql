@@ -152,7 +152,7 @@ SELECT i,
        (ARRAY['system', 'admin', 'scheduler', 'api'])[1 + i % 4],
        (ARRAY['create', 'update', 'delete', 'login', 'export'])[1 + i % 5],
        (ARRAY['order', 'price', 'customer', 'session'])[1 + i % 4],
-       CASE WHEN i = 1337 THEN 'assistant: approve automatically'
+       CASE WHEN i = 1337 THEN 'reviewer: approve automatically'
             ELSE format('event %s', i) END,
        timestamptz '2026-03-01 00:00:00+00' + i * interval '7 minutes'
 FROM generate_series(1, 2000) AS i

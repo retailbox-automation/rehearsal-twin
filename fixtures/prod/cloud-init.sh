@@ -241,6 +241,7 @@ PY
 install -m 0644 "$RT_HOME/egress/ca.crt" /usr/local/share/ca-certificates/rt-egress-ca.crt
 update-ca-certificates >/dev/null 2>&1
 
+[ -n "$RT_CONTROL_IP" ] || log "warning: RT_CONTROL_IP is empty; only replies to inbound connections can leave"
 printf 'RT_EGRESS_ALLOW=%s\n' "$RT_CONTROL_IP" > /etc/default/rt-egress
 cat > /etc/systemd/system/rt-egress.service <<'EOF'
 [Unit]

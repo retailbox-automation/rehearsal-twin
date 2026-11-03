@@ -640,7 +640,10 @@ def iptables_up_commands(allow, dns_port: int = DNS_PORT, tcp_port: int = TCP_PO
           flt + ["-N", OUT_CHAIN], flt + ["-A", OUT_CHAIN, "-o", "lo", "-j", "ACCEPT"],
           # Redirected packets keep the original output device in filter OUTPUT (the hook's
           # device is fixed before nat rewrites the destination), so accept by local destination.
-          flt + ["-A", OUT_CHAIN, "-m", "addrtype", "--dst-type", "LOCAL", "-j", "ACCEPT"]]
+          flt + ["-A", OUT_CHAIN, "-m", "addrtype", "--dst-type", "LOCAL", "-j", "ACCEPT"],
+          # Replies on connections opened from outside (SSH from control) are not egress; a
+          # connection opened from here never gets that far, its first packet is redirected or dropped.
+          flt + ["-A", OUT_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"]]
     for a in allow:
         c.append(flt + ["-A", OUT_CHAIN, "-d", a, "-j", "ACCEPT"])
     c += [flt + ["-A", OUT_CHAIN, "-p", "udp", "-j", UDP_CHAIN],
@@ -652,6 +655,7 @@ def iptables_up_commands(allow, dns_port: int = DNS_PORT, tcp_port: int = TCP_PO
 def ip6tables_up_commands() -> list:
     f6 = ["ip6tables", "-w"]
     return [f6 + ["-N", OUT6_CHAIN], f6 + ["-A", OUT6_CHAIN, "-o", "lo", "-j", "ACCEPT"],
+            f6 + ["-A", OUT6_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"],
             f6 + ["-A", OUT6_CHAIN, "-j", "DROP"], f6 + ["-I", "OUTPUT", "1", "-j", OUT6_CHAIN]]
 
 

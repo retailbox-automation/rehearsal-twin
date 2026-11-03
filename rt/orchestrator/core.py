@@ -207,10 +207,10 @@ class Orchestrator:
     # ------------------------------------------------------------------ rehearsal
     def run(self, rid: str) -> dict:
         rec = self.store.load(rid)
+        if rec["status"] != "queued":  # checked before anything is written: a stray call changes nothing
+            raise RuntimeError(f"rehearsal is {rec['status']}, not queued")
         llm_mark = len(getattr(self.inference, "llm_calls", []) or [])
         try:
-            if rec["status"] != "queued":
-                raise RuntimeError(f"rehearsal is {rec['status']}, not queued")
             self._emit(rid, "step", {"step": "rehearse"})
             script = rec.get("script_text")
             if rec["source"] == "agent":
@@ -479,10 +479,10 @@ class Orchestrator:
     def apply(self, rid: str) -> dict:
         rec = self.load(rid)
         rid = rec["id"]
+        if rec.get("status") != "applying" or not rec.get("approved"):  # checked before anything is written
+            raise RuntimeError(f"rehearsal is {rec.get('status')}, not approved")
         llm_mark = len(getattr(self.inference, "llm_calls", []) or [])
         try:
-            if rec.get("status") != "applying" or not rec.get("approved"):
-                raise RuntimeError(f"rehearsal is {rec.get('status')}, not approved")
             n = rec["approvable"]
             script = self.store.read_file(rid, f"attempt-{n}.sh")
             if sha256_hex(script) != rec["approved"]["script_sha256"]:

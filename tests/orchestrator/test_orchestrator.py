@@ -344,3 +344,17 @@ def test_recover_marks_interrupted(harness):
     h.orch._running = None  # as after a restart
     assert h.orch.recover() == [rec["id"]]
     assert h.orch.load(rec["id"])["status"] == "interrupted"
+
+
+def test_stray_calls_do_not_change_a_record(harness):
+    h = harness
+    rec = h.run_preset("a")
+    with pytest.raises(RuntimeError):
+        h.orch.apply(rec["id"])  # not approved yet
+    assert h.orch.load(rec["id"])["status"] == "awaiting_approval" and "run" not in h.prod.phases
+    h.orch.approve_and_apply(rec["id"], approval_of(rec))
+    n_events = len(h.events(rec["id"]))
+    for call in (h.orch.run, h.orch.apply):
+        with pytest.raises(RuntimeError):
+            call(rec["id"])
+    assert h.orch.load(rec["id"])["status"] == "applied" and len(h.events(rec["id"])) == n_events

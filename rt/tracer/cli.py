@@ -4,6 +4,9 @@
     rtrace run --script s.sh --wall 60 --mem 512M --pids 256 > run.json
     rtrace after --scope scope.json > state1.json
     rtrace diff state0.json state1.json run.json --scope scope.json > ledger.json
+
+Keep the script, scope.json and every state/run/ledger file in /opt/rt/work: files written
+under a tracked root (/srv, /etc, /root, ...) during the run show up in the ledger.
 """
 from __future__ import annotations
 
@@ -60,7 +63,7 @@ def tracked_roots(cfg: dict, scope_raw) -> list:
 
 def self_digest(cfg: dict) -> str:
     root = cfg.get("self_root") or config.RT_HOME
-    m = fsstate.scan([root], exclude=[root + "/state", root + "/egress/certs"],
+    m = fsstate.scan([root], exclude=[root + "/state", root + "/work", root + "/egress/certs"],
                      hash_limit=cfg.get("hash_limit", 4 << 20))
     m = {p: e for p, e in m.items() if "/__pycache__" not in p}
     return fsstate.tree_digest(m)

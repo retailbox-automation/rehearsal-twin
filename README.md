@@ -4,6 +4,15 @@ Run a risky script on a disposable twin of your server first. See every side eff
 
 Built for the Vultr: Agent Rush hackathon, Challenge 1 "Blast Radius Zero" (November 3–8, 2026). Live demo: https://rehearsal-twin.retailbox-automation.com
 
+## Evidence from a live run on Vultr (rehearsal `3f39490652dc`, November 3, 2026)
+
+| Claim | Check it | What you will see |
+|---|---|---|
+| The risky script ran on a disposable twin, not on production | [rehearsal record](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/3f39490652dc) | attempt 1 on `twin-13f394`: 221 files deleted, 71 outside the declared scope; `POST prod-api.internal/purge` blocked, recorded, 0 bytes delivered; production unchanged |
+| The agent's safer variant was rehearsed again on a fresh twin | same record, `attempts` | four twins created from the golden snapshot and destroyed; the accepted variant touched only `/srv/app/tmp/cache` (150 files) and `sessions` (240 rows) |
+| Production changed exactly as rehearsed | same record, `compare` | 391 predicted, 391 happened, 0 surprises |
+| The result cannot be edited afterwards | [receipt](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/3f39490652dc/receipt), then `python -m rt.receipts.verify_receipt --pubkey rYyVzKw04aG8Y278Q1QsS1xeqBLAwX4NOHt4FWpryy4= receipt.json` | `OK signature valid`; change any number and it fails |
+
 ## Why
 
 In the last sixteen months coding agents wiped production data in public at least four times:

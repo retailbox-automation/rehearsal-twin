@@ -249,7 +249,9 @@ printf 'RT_EGRESS_ALLOW=%s\n' "$RT_CONTROL_IP" > /etc/default/rt-egress
 cat > /etc/systemd/system/rt-egress.service <<'EOF'
 [Unit]
 Description=Rehearsal Twin egress recorder (records outbound calls, delivers nothing)
-After=network-online.target cloud-final.service
+# Not after cloud-final: that unit runs after multi-user.target, which would make an ordering
+# cycle and systemd would drop this start job at every boot of a twin.
+After=network-online.target cloud-init.service
 Wants=network-online.target
 
 [Service]
@@ -267,7 +269,6 @@ EOF
 systemctl daemon-reload
 systemctl enable --now prod-api shop-webhooks >/dev/null 2>&1
 systemctl enable rt-egress >/dev/null 2>&1
-# --no-block: when this runs as cloud-init user data, rt-egress waits for cloud-final to finish.
 systemctl restart --no-block rt-egress
 
 # ---------------------------------------------------------------- self-check (no token values printed)

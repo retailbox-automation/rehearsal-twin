@@ -94,6 +94,31 @@ EOF
 rehearse exfil "$W/exfil.sh" '{"paths": [], "tables": [], "hosts": []}' || echo "rehearse exfil failed"
 rehearse escape "$W/escape.sh" '{"paths": ["/srv/app/tmp"], "tables": [], "hosts": []}' || echo "rehearse escape failed"
 
+# Noise vs the script: drops by a system process are noise (in scope); the script's own are denials.
+printf '%s\n' 'true' > "$W/quiet.sh"
+systemd-run --quiet --unit=rt-noise-gen --collect -- python3 -c 'import socket, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+for _ in range(150):
+    try:
+        s.sendto(b"n", ("192.0.2.77", 9))
+    except OSError:
+        pass
+    time.sleep(0.2)'
+sleep 1
+rehearse noise "$W/quiet.sh" '{"paths": [], "tables": [], "hosts": []}' || echo "rehearse noise failed"
+systemctl stop rt-noise-gen 2>/dev/null
+cat > "$W/udp_attempt.sh" <<'EOF'
+python3 -c 'import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+for _ in range(3):
+    try:
+        s.sendto(b"x", ("192.0.2.9", 9))
+    except OSError as e:
+        print("R sendto", e.errno)'
+exit 0
+EOF
+rehearse udp_attempt "$W/udp_attempt.sh" '{"paths": [], "tables": [], "hosts": []}' || echo "rehearse udp_attempt failed"
+
 # Controls (must differ): the same attempts in weaker sandboxes do get through.
 PROBE_CAPS="CapabilityBoundingSet=~CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_SYS_MODULE CAP_SYS_PTRACE CAP_BPF CAP_SYS_BOOT CAP_SYS_RAWIO CAP_SYS_TIME CAP_MKNOD"
 systemd-run --wait --pipe --collect --quiet -p IPAddressDeny=any -p IPAddressAllow=localhost -p "$PROBE_CAPS" \
@@ -139,7 +164,8 @@ def check(name, ok, detail=""):
 canaries = json.load(open("/opt/rt/canaries.json"))["canaries"]
 tokens = [c["token"] for c in canaries]
 
-for name in ("reprice", "safe1", "safe2", "migrate_safe", "migrate", "exfil", "escape", "cleanup_safe", "cleanup"):
+for name in ("reprice", "safe1", "safe2", "migrate_safe", "migrate", "exfil", "escape", "noise", "udp_attempt",
+             "cleanup_safe", "cleanup"):
     led = load(f"{name}.ledger.json")
     blob = json.dumps(led)
     check(f"{name}: hash matches content", led["ledger_sha256"] == ledger_sha256(led))
@@ -233,6 +259,16 @@ if audit_on:
     check("exfil: auditd saw the decoy file read", "read" in xc["evidence"], xc["evidence"])
 else:
     print("      exfil: auditd not active here, read evidence not checked")
+nz = load("noise.ledger.json")
+check("noise: a system process dropping packets leaves the script in scope",
+      nz["summary"]["verdict"] == "in_scope" and nz["system_noise"]["udp_packets"] >= 1
+      and nz["egress_denied"] == {"packets": 0}, (nz["summary"], nz["system_noise"], nz["out_of_scope"][:3]))
+ua = load("udp_attempt.ledger.json")
+check("noise: the script's own UDP attempt is a denial, out of scope",
+      ua["egress_denied"]["packets"] >= 3 and ua["summary"]["verdict"] == "out_of_scope"
+      and [o["op"] for o in ua["out_of_scope"]] == ["denied"], (ua["egress_denied"], ua["out_of_scope"]))
+print(f"      noise: system_noise {nz['system_noise']}, drop_log {nz['drop_log'][:2]}; "
+      f"script denied {ua['egress_denied']}, drop_log {ua['drop_log'][:2]}, ip_accounting {ua['ip_accounting']}")
 o = load("oom.run.json")["limits"]
 check("limits: memory hog is OOM-killed", o["oom"] and load("oom.run.json")["exit"] != 0,
       {k: o[k] for k in ("oom", "oom_kills", "peak_mem_mb", "mem_max_mb")})

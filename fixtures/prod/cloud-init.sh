@@ -49,7 +49,9 @@ fi
 # Background jobs that would call out or touch files while a rehearsal runs.
 for u in apt-daily.timer apt-daily-upgrade.timer motd-news.timer fwupd-refresh.timer ua-timer.timer \
          logrotate.timer unattended-upgrades.service snapd.service snapd.socket snapd.seeded.service \
-         systemd-timesyncd.service; do
+         snapd.snap-repair.timer systemd-timesyncd.service update-notifier-download.timer \
+         update-notifier-motd.timer apport-autoreport.timer whoopsie.service esm-cache.service \
+         apt-news.service; do
   systemctl disable --now "$u" >/dev/null 2>&1 || true
 done
 

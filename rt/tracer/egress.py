@@ -637,7 +637,10 @@ def iptables_up_commands(allow, dns_port: int = DNS_PORT, tcp_port: int = TCP_PO
     c.append(nat + ["-I", "OUTPUT", "1", "-j", NAT_CHAIN])
     c += [flt + ["-N", UDP_CHAIN], flt + ["-A", UDP_CHAIN, "-j", "DROP"],
           flt + ["-N", DROP_CHAIN], flt + ["-A", DROP_CHAIN, "-j", "DROP"],
-          flt + ["-N", OUT_CHAIN], flt + ["-A", OUT_CHAIN, "-o", "lo", "-j", "ACCEPT"]]
+          flt + ["-N", OUT_CHAIN], flt + ["-A", OUT_CHAIN, "-o", "lo", "-j", "ACCEPT"],
+          # Redirected packets keep the original output device in filter OUTPUT (the hook's
+          # device is fixed before nat rewrites the destination), so accept by local destination.
+          flt + ["-A", OUT_CHAIN, "-m", "addrtype", "--dst-type", "LOCAL", "-j", "ACCEPT"]]
     for a in allow:
         c.append(flt + ["-A", OUT_CHAIN, "-d", a, "-j", "ACCEPT"])
     c += [flt + ["-A", OUT_CHAIN, "-p", "udp", "-j", UDP_CHAIN],

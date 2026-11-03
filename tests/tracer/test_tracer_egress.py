@@ -89,7 +89,9 @@ def test_iptables_rules_shape():
     assert any("-d 10.77.0.3 -j ACCEPT" in c for c in out)
     assert out[-1].endswith(f"-j {egress.DROP_CHAIN}")
     assert out[-2].endswith(f"-p udp -j {egress.UDP_CHAIN}")
-    assert not any("ACCEPT" in c for c in out if "-o lo" not in c and "10.77.0.3" not in c)
+    assert out[1].endswith("-m addrtype --dst-type LOCAL -j ACCEPT")
+    assert not any("ACCEPT" in c for c in out
+                   if "-o lo" not in c and "10.77.0.3" not in c and "--dst-type LOCAL" not in c)
     assert flat[-1].endswith(f"-I OUTPUT 1 -j {egress.OUT_CHAIN}")
     assert any(c.endswith(f"-I OUTPUT 1 -j {egress.NAT_CHAIN}") for c in flat)
     with pytest.raises(ValueError):

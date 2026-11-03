@@ -126,6 +126,14 @@ systemctl daemon-reload
 systemctl enable "$SVC" >/dev/null 2>&1
 systemctl restart "$SVC"
 
+# ---------------------------------------------------------------- firewall (Vultr Ubuntu images ship ufw active with only 22/tcp open;
+# without 80/443 the ACME HTTP-01 challenge times out and no certificate is issued — seen live 2026-11-03)
+if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "^Status: active"; then
+  ufw allow 80/tcp >/dev/null
+  ufw allow 443/tcp >/dev/null
+  log "ufw: 80/tcp and 443/tcp allowed"
+fi
+
 # ---------------------------------------------------------------- Caddy (TLS for RT_DOMAIN; SSE needs flush_interval -1)
 if [ -n "$RT_DOMAIN" ]; then SITE=$RT_DOMAIN; else SITE=":80"; fi
 caddyfile=$(cat <<EOF

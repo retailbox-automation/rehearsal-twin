@@ -93,7 +93,12 @@ class Orchestrator:
         return rec
 
     def _emit_view(self, rec: dict) -> None:
-        self._emit(rec["id"], "view", self.view(rec["id"], with_timeline=False))
+        try:
+            view = self.view(rec["id"], with_timeline=False)
+        except Exception as e:  # the feed must go on (and reach "done") even if a view cannot be built
+            self._emit(rec["id"], "error", {"message": f"view not built: {_err(e)}"})
+            return
+        self._emit(rec["id"], "view", view)
 
     def _attempt(self, rec: dict, n: int) -> dict:
         return next(a for a in rec["attempts"] if a["n"] == n)
@@ -340,7 +345,10 @@ class Orchestrator:
         ledger = result["ledger"]
         self.store.write_json(rid, f"ledger-{n}.json", ledger)
         self.store.write_json(rid, f"twin-state-{n}.json", result["manifest"])
-        problems = verify(ledger, rec["scope"])
+        try:
+            problems = verify(ledger, rec["scope"])
+        except Exception as e:  # a ledger whose facts cannot even be checked is not a ledger
+            problems = [f"ledger cannot be checked: {_err(e)}"]
         a["verify"] = {"ok": not problems, "problems": problems}
         a["twin_state_version"] = result["state_version"]
         self._emit(rid, "verify", {"where": "control", "n": n, **a["verify"]})

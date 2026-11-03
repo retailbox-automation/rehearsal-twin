@@ -89,6 +89,8 @@ def install(app: FastAPI, orch: Orchestrator | None = None, *,
             orch = build_live(settings)
         except NotConfigured as e:
             problem = str(e)
+        except Exception as e:  # e.g. an unreadable signing key: keep serving health and say why (no values)
+            problem = f"{type(e).__name__}: {e}"
     if orch is not None:
         orch.recover()
     background = run_in_background or _thread

@@ -225,7 +225,8 @@ def _widen_scope(ledger):
                                                         "hosts": ["prod-api.internal"]})
 
 
-@pytest.mark.parametrize("tamper", [_flip_verdict, _widen_scope, lambda l: dict(l, exit=0, ledger_sha256="ab" * 32)])
+@pytest.mark.parametrize("tamper", [_flip_verdict, _widen_scope, lambda l: dict(l, exit=0, ledger_sha256="ab" * 32),
+                                    lambda l: dict(l, rows={"sessions": "not a row change"})])
 def test_ledger_verified_on_control(harness, tamper):
     h = harness
     h.fleet.twin_setup = lambda t: setattr(t, "tamper", tamper)

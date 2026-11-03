@@ -509,15 +509,15 @@ class Orchestrator:
             twin_ledger = self.store.read_json(rid, f"ledger-{n}.json")
             cmp = ledger_compare(twin_ledger, prod_ledger)
             self.store.write_json(rid, "compare.json", cmp)
-            prod_effects = effect_counts(prod_ledger)
-            self._emit(rid, "prod_counters", prod_effects)
-            self._emit(rid, "compare", {"match": cmp["match"], "counts": cmp["counts"]})
-            self._emit(rid, "step", {"step": "compare"})
             rec["apply"] = {"status": "done", "prod_ledger_sha256": prod_ledger.get("ledger_sha256"),
                             "verify": {"ok": not problems, "problems": problems},
                             "prod_before_state_version": result["state_version"],
                             "match": cmp["match"], "counts": cmp["counts"]}
             self._save(rec)
+            self._emit_view(rec)  # the screen has the comparison before the compare step lands
+            self._emit(rid, "prod_counters", effect_counts(prod_ledger))
+            self._emit(rid, "compare", {"match": cmp["match"], "counts": cmp["counts"]})
+            self._emit(rid, "step", {"step": "compare"})
             self._collect_llm(rec, llm_mark)
             receipt = self._receipt(rec, twin_ledger, prod_ledger, cmp, script)
             self.store.write_json(rid, "receipt.json", receipt)

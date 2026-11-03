@@ -92,6 +92,9 @@ def test_full_cycle_preset_a(harness):
     assert kinds.index("prod_counters") > max(i for i, e in enumerate(ev) if e["type"] == "step"
                                               and e["data"]["step"] == "apply")
     assert kinds[-1] == "done" and ev[-1]["data"]["status"] == "applied"
+    at_compare = max(i for i, e in enumerate(ev) if e["type"] == "step" and e["data"]["step"] == "compare")
+    last_view = max(i for i, e in enumerate(ev[:at_compare]) if e["type"] == "view")
+    assert ev[last_view]["data"]["compare"]["match"] is True  # the screen can draw the compare step
     assert [e["seq"] for e in ev] == list(range(1, len(ev) + 1))
 
     # only allowlisted models were asked, and no secret value reached a prompt or the data dir

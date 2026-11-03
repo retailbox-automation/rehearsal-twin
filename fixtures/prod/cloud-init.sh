@@ -171,6 +171,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 chmod 0644 /etc/cron.d/nightly
 
+# An empty preload list: the rehearsal sandbox mounts it read-only, so a script cannot create one.
+[ -e /etc/ld.so.preload ] || install -m 0644 /dev/null /etc/ld.so.preload
+
 # ---------------------------------------------------------------- auditd watch on the decoy file
 cat > /etc/audit/rules.d/rt-canary.rules <<'EOF'
 # Rehearsal Twin decoy: open, read, write or attribute change of the decoy key file

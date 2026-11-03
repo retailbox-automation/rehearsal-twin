@@ -32,6 +32,9 @@ DEFAULTS = {
     ],
     "canaries_path": RT_HOME + "/canaries.json",
     "run_slice": "rt.slice",
+    # Extra addresses the sandboxed script may reach besides localhost and the recorder's
+    # fake range. Empty on purpose: the script must not reach the control machine.
+    "sandbox_allow": [],
 }
 
 

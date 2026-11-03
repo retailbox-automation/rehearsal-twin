@@ -13,6 +13,9 @@ from . import fsstate, pgstate
 
 LIMIT_KEYS = ("wall_s", "peak_mem_mb", "oom", "oom_kills", "pids_max", "pids_limit_hit", "wall_exceeded",
               "wall_max_s", "mem_max_mb", "leftover_processes")
+OUTPUT_TAIL = 2048
+LOGGING_SQL = re.compile(r"\b(log_statement|log_min_duration_statement|log_destination|logging_collector|"
+                         r"pg_reload_conf|alter\s+system)\b", re.I)
 
 
 def mask(text, defs) -> str:
@@ -35,7 +38,7 @@ def egress_from_records(records, run_unit: str | None, ignore_units=(), defs=())
     egress = []
     dns = Counter()
     hits = set()
-    scope_unit = f"{run_unit}.scope" if run_unit else None
+    script_units = {f"{run_unit}.service", f"{run_unit}.scope"} if run_unit else set()
     for r in records:
         unit = r.get("unit") or ""
         if unit and unit in ignore_units:
@@ -46,7 +49,7 @@ def egress_from_records(records, run_unit: str | None, ignore_units=(), defs=())
             if q:
                 dns[mask(q, defs)] += 1
             continue
-        source = "script" if scope_unit and unit == scope_unit else (unit or "unknown")
+        source = "script" if unit in script_units else (unit or "unknown")
         e = {
             "kind": r.get("kind") or "tcp",
             "host": mask(_norm_host(r.get("host")) or None, defs),
@@ -110,21 +113,59 @@ def evaluate_canaries(defs, files, rows, sql, audit, egress_records, hits) -> li
     return out
 
 
-def integrity_issues(state0: dict, state1: dict, egress_bad_lines: int = 0) -> list:
+def integrity(state0: dict, state1: dict, run: dict, sql=(), egress_bad_lines: int = 0) -> dict:
+    """Checks that the containment and the tracer were intact; every failed check is an issue."""
     issues = []
-    if state0.get("self_digest") != state1.get("self_digest"):
-        issues.append("tracer files under /opt/rt changed")
-    if state0.get("egress_active") and not state1.get("egress_active"):
+    checks = {}
+
+    def same(name, a, b, issue):
+        if a is None and b is None:
+            checks[name] = "not available"
+        elif a == b:
+            checks[name] = "unchanged"
+        else:
+            checks[name] = "changed"
+            issues.append(issue)
+
+    same("tracer_files", state0.get("self_digest"), state1.get("self_digest"), "tracer files under /opt/rt changed")
+    same("firewall_rules", (state0.get("iptables") or {}).get("rules_sha256"),
+         (state1.get("iptables") or {}).get("rules_sha256"), "egress firewall rules changed")
+    same("routes", state0.get("routes_sha256"), state1.get("routes_sha256"), "routing table changed")
+
+    e0, e1 = state0.get("egress_service") or {}, state1.get("egress_service") or {}
+    if not state0.get("egress_active"):
+        checks["egress_recorder"] = "not running"
+        issues.append("egress recorder was not running: outbound attempts were blocked but not recorded")
+    elif not state1.get("egress_active"):
+        checks["egress_recorder"] = "stopped"
         issues.append("egress recorder not active after the run")
-    r0 = (state0.get("iptables") or {}).get("rules_sha256")
-    r1 = (state1.get("iptables") or {}).get("rules_sha256")
-    if r0 != r1:
-        issues.append("egress firewall rules changed")
+    elif e0 and e1 and (e0.get("main_pid") != e1.get("main_pid") or e0.get("restarts") != e1.get("restarts")):
+        checks["egress_recorder"] = "restarted"
+        issues.append("egress recorder restarted during the run")
+    else:
+        checks["egress_recorder"] = "running"
+
+    if any(LOGGING_SQL.search(s.get("statement") or "") for s in sql):
+        checks["statement_logging"] = "changed"
+        issues.append("the script changed Postgres statement logging")
+    else:
+        checks["statement_logging"] = "unchanged"
+
     if (state0.get("pg") or {}).get("ok") and not (state1.get("pg") or {}).get("ok"):
         issues.append("postgres state unreadable after the run")
     if egress_bad_lines:
         issues.append(f"{egress_bad_lines} unreadable egress log lines")
-    return issues
+    if run.get("error"):
+        issues.append(run["error"])
+    elif run.get("unit_name") and not run.get("stats_recorded", True):
+        issues.append("run statistics were not recorded")
+    checks["sandbox"] = (run.get("sandbox") or {}).get("mode") or "none"
+    checks["decoy_watch"] = state0.get("decoy_watch") or "not available"
+    return {"ok": not issues, "issues": issues, "checks": checks}
+
+
+def integrity_issues(state0: dict, state1: dict, egress_bad_lines: int = 0) -> list:
+    return integrity(state0, state1, {}, (), egress_bad_lines)["issues"]
 
 
 def dropped_delta(c0: dict, c1: dict) -> dict:
@@ -150,7 +191,7 @@ def build_facts(state0: dict, state1: dict, run: dict, sources: dict, cfg: dict)
     start_counters = (run.get("iptables_start") or state0.get("iptables") or {}).get("counters") or {}
     end_counters = (state1.get("iptables") or {}).get("counters") or {}
     limits = run.get("limits") or {}
-    issues = integrity_issues(state0, state1, int(sources.get("egress_bad_lines") or 0))
+    checked = integrity(state0, state1, run, sources.get("sql") or [], int(sources.get("egress_bad_lines") or 0))
     return {
         "version": 1,
         "files": files,
@@ -163,5 +204,11 @@ def build_facts(state0: dict, state1: dict, run: dict, sources: dict, cfg: dict)
         "canaries": canaries,
         "exit": run.get("exit"),
         "limits": {k: limits.get(k) for k in LIMIT_KEYS if k in limits},
-        "integrity": {"ok": not issues, "issues": issues},
+        "integrity": checked,
+        "sandbox": {"mode": (run.get("sandbox") or {}).get("mode") or "none",
+                    "ip_filter": (run.get("sandbox") or {}).get("ip_filter") or "none"},
+        "output": {
+            "stdout_tail": mask((run.get("stdout") or "")[-OUTPUT_TAIL:], defs),
+            "stderr_tail": mask((run.get("stderr") or "")[-OUTPUT_TAIL:], defs),
+        },
     }

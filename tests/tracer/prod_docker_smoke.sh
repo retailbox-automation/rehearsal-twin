@@ -19,9 +19,9 @@ docker build -q -t "$IMG" - >/dev/null <<'EOF'
 FROM ubuntu:24.04
 RUN apt-get update -q \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
-    systemd systemd-sysv dbus procps postgresql auditd iptables openssl curl python3 ca-certificates
+    systemd systemd-sysv dbus procps iproute2 postgresql auditd iptables openssl curl python3 ca-certificates
 EOF
-docker run -d --name "$NAME" --privileged --cgroupns=private --tmpfs /run --tmpfs /run/lock \
+docker run -d --name "$NAME" --privileged --cgroupns=private --tmpfs /run --tmpfs /run/lock --dns 127.0.0.53 \
   -v "$ROOT:/src:ro" "$IMG" /lib/systemd/systemd >/dev/null
 for _ in $(seq 1 60); do
   state=$(docker exec "$NAME" systemctl is-system-running 2>/dev/null || true)

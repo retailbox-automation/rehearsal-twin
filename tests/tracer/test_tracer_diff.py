@@ -97,7 +97,7 @@ def test_cleanup_preset_ledger():
     assert canaries["api-key-row"]["touched"] is False
     assert ledger["exit"] == 0
     assert ledger["limits"]["pids_max"] == 256 and ledger["limits"]["oom"] is False
-    assert ledger["integrity"] == {"ok": True, "issues": []}
+    assert ledger["integrity"]["ok"] is True and ledger["integrity"]["issues"] == []
     assert "stdout" not in ledger
     s = ledger["summary"]
     assert s["files_changed"] == 4 and s["files_out_of_scope"] == 2
@@ -189,6 +189,51 @@ def test_canary_read_and_exfil_and_masking():
     assert not any(t in blob for t in TOKENS.values())
     assert "<canary:api-key-row>" in ledger["sql"][0]["statement"]
     assert ledger["dns"][0]["qname"] == "<canary:env-file>.exfil.example"
+
+
+def test_service_unit_attribution_and_output_masking():
+    s0, s1 = cleanup_states()
+    src = cleanup_sources()
+    for rec in src["egress_records"]:
+        if rec.get("unit") == "rt-run-ab12.scope":
+            rec["unit"] = "rt-run-ab12.service"
+    run = run_record(stderr="leak " + TOKENS["env-file"] + "\n", stdout="ok\n",
+                     sandbox={"mode": "service", "ip_filter": "active", "ip_filter_detail": "3 packets"})
+    ledger = finalize(diff.build_facts(s0, s1, run, src, CFG), SCOPE)
+    assert ledger["egress"][0]["source"] == "script"
+    assert ledger["sandbox"] == {"mode": "service", "ip_filter": "active"}
+    assert ledger["output"]["stderr_tail"] == "leak <canary:env-file>\n"
+    other = finalize(diff.build_facts(s0, s1, dict(run, stdout="different\n"), src, CFG), SCOPE)
+    assert other["ledger_sha256"] == ledger["ledger_sha256"]
+
+
+def test_integrity_checks_for_sandbox_escape_attempts():
+    s0, s1 = cleanup_states()
+    s0.update(routes_sha256="rt1", egress_service={"active": "active", "main_pid": "10", "restarts": "0"})
+    s1.update(routes_sha256="rt1", egress_service={"active": "active", "main_pid": "10", "restarts": "0"})
+    src = cleanup_sources()
+    run = run_record(sandbox={"mode": "service", "ip_filter": "active"}, stats_recorded=True)
+    good = diff.build_facts(s0, s1, run, src, CFG)["integrity"]
+    assert good["ok"] is True
+    assert good["checks"] == {"tracer_files": "unchanged", "firewall_rules": "unchanged", "routes": "unchanged",
+                              "egress_recorder": "running", "statement_logging": "unchanged", "sandbox": "service",
+                              "decoy_watch": "not available"}
+
+    s1b = dict(s1, routes_sha256="rt2", egress_service={"active": "active", "main_pid": "11", "restarts": "1"})
+    src["sql"].append({"user": "root", "db": "shop", "app": "psql", "statement": "SET log_statement = 'none'"})
+    bad = diff.build_facts(s0, s1b, run, src, CFG)["integrity"]
+    assert bad["ok"] is False
+    assert bad["checks"]["routes"] == "changed"
+    assert bad["checks"]["egress_recorder"] == "restarted"
+    assert bad["checks"]["statement_logging"] == "changed"
+
+    s0c = dict(s0, egress_active=False)
+    off = diff.build_facts(s0c, s1, run, cleanup_sources(), CFG)["integrity"]
+    assert off["checks"]["egress_recorder"] == "not running" and not off["ok"]
+
+    refused = diff.build_facts(s0, s1, {"error": "refusing to run: cgroup IP filter not available"},
+                               cleanup_sources(), CFG)["integrity"]
+    assert "refusing to run: cgroup IP filter not available" in refused["issues"]
 
 
 def test_integrity_issues_and_dropped_packets():

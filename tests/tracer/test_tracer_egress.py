@@ -91,11 +91,18 @@ def test_iptables_rules_shape():
     assert out[-2].endswith(f"-p udp -j {egress.UDP_CHAIN}")
     assert out[1].endswith("-m addrtype --dst-type LOCAL -j ACCEPT")
     assert out[2].endswith("-m conntrack --ctstate ESTABLISHED -j ACCEPT")
+    assert out[3].endswith("-p udp --sport 68 --dport 67 -j ACCEPT")
     assert not any("ACCEPT" in c for c in out
                    if "-o lo" not in c and "10.77.0.3" not in c and "--dst-type LOCAL" not in c
-                   and "--ctstate ESTABLISHED" not in c)
+                   and "--ctstate ESTABLISHED" not in c and "--dport 67" not in c)
     assert not any("NEW" in c or "RELATED" in c for c in flat)
     assert flat[-1].endswith(f"-I OUTPUT 1 -j {egress.OUT_CHAIN}")
+    six = [" ".join(c) for c in egress.ip6tables_up_commands()]
+    nd = [c for c in six if "--icmpv6-type" in c]
+    assert len(nd) == 4 and all(c.endswith("-j ACCEPT") for c in nd)
+    assert six[-2].endswith(f"-A {egress.OUT6_CHAIN} -j DROP")
+    assert not any("ACCEPT" in c for c in six if "--icmpv6-type" not in c and "-o lo" not in c
+                   and "ESTABLISHED" not in c)
     assert any(c.endswith(f"-I OUTPUT 1 -j {egress.NAT_CHAIN}") for c in flat)
     with pytest.raises(ValueError):
         egress._allow_list("not-an-ip")

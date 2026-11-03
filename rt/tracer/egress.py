@@ -383,10 +383,15 @@ class Recorder:
                 f.write(line)
 
     def _owner(self, port: int, proto: str) -> dict:
-        try:
-            return self.owner_fn(port, proto) or {}
-        except Exception:  # noqa: BLE001 - attribution is best effort, the record is written anyway
-            return {}
+        for attempt in range(3):
+            try:
+                found = self.owner_fn(port, proto) or {}
+            except Exception:  # noqa: BLE001 - attribution is best effort, the record is written anyway
+                found = {}
+            if found.get("unit"):
+                return found
+            time.sleep(0.03 * (attempt + 1))
+        return found
 
     # ---- DNS
     def dns_answer(self, data: bytes, client_port: int, proto: str) -> bytes | None:
@@ -643,7 +648,9 @@ def iptables_up_commands(allow, dns_port: int = DNS_PORT, tcp_port: int = TCP_PO
           flt + ["-A", OUT_CHAIN, "-m", "addrtype", "--dst-type", "LOCAL", "-j", "ACCEPT"],
           # Replies on connections opened from outside (SSH from control) are not egress; a
           # connection opened from here never gets that far, its first packet is redirected or dropped.
-          flt + ["-A", OUT_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"]]
+          flt + ["-A", OUT_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"],
+          # DHCP lease renewals keep the VPC address; the sandboxed script cannot send these (IP filter).
+          flt + ["-A", OUT_CHAIN, "-p", "udp", "--sport", "68", "--dport", "67", "-j", "ACCEPT"]]
     for a in allow:
         c.append(flt + ["-A", OUT_CHAIN, "-d", a, "-j", "ACCEPT"])
     c += [flt + ["-A", OUT_CHAIN, "-p", "udp", "-j", UDP_CHAIN],
@@ -655,7 +662,11 @@ def iptables_up_commands(allow, dns_port: int = DNS_PORT, tcp_port: int = TCP_PO
 def ip6tables_up_commands() -> list:
     f6 = ["ip6tables", "-w"]
     return [f6 + ["-N", OUT6_CHAIN], f6 + ["-A", OUT6_CHAIN, "-o", "lo", "-j", "ACCEPT"],
-            f6 + ["-A", OUT6_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"],
+            f6 + ["-A", OUT6_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"]] + [
+            # Neighbour discovery and multicast listener reports from the kernel itself (router and
+            # neighbour solicitation, advertisement, MLDv2): link-local housekeeping, not egress.
+            f6 + ["-A", OUT6_CHAIN, "-p", "ipv6-icmp", "--icmpv6-type", t, "-j", "ACCEPT"]
+            for t in ("133", "135", "136", "143")] + [
             f6 + ["-A", OUT6_CHAIN, "-j", "DROP"], f6 + ["-I", "OUTPUT", "1", "-j", OUT6_CHAIN]]
 
 
@@ -687,11 +698,13 @@ def iptables_up(allow) -> list:
         if p.returncode != 0:
             raise RuntimeError(f"{' '.join(argv)}: {p.stderr.strip()}")
     warnings = []
-    for argv in ip6tables_up_commands():
+    for i, argv in enumerate(ip6tables_up_commands()):
         p = _run(argv)
         if p.returncode != 0:
-            warnings.append(f"{' '.join(argv)}: {p.stderr.strip()}")
-            break
+            if i == 0:  # no ip6tables here at all: nothing half-built, warn only
+                warnings.append(f"{' '.join(argv)}: {p.stderr.strip()}")
+                break
+            raise RuntimeError(f"{' '.join(argv)}: {p.stderr.strip()}")
     return warnings
 
 

@@ -171,6 +171,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 chmod 0644 /etc/cron.d/nightly
 
+# An empty preload list: the rehearsal sandbox mounts it read-only, so a script cannot create one.
+[ -e /etc/ld.so.preload ] || install -m 0644 /dev/null /etc/ld.so.preload
+
 # ---------------------------------------------------------------- auditd watch on the decoy file
 cat > /etc/audit/rules.d/rt-canary.rules <<'EOF'
 # Rehearsal Twin decoy: open, read, write or attribute change of the decoy key file
@@ -246,7 +249,9 @@ printf 'RT_EGRESS_ALLOW=%s\n' "$RT_CONTROL_IP" > /etc/default/rt-egress
 cat > /etc/systemd/system/rt-egress.service <<'EOF'
 [Unit]
 Description=Rehearsal Twin egress recorder (records outbound calls, delivers nothing)
-After=network-online.target cloud-final.service
+# Not after cloud-final: that unit runs after multi-user.target, which would make an ordering
+# cycle and systemd would drop this start job at every boot of a twin.
+After=network-online.target cloud-init.service
 Wants=network-online.target
 
 [Service]
@@ -264,7 +269,6 @@ EOF
 systemctl daemon-reload
 systemctl enable --now prod-api shop-webhooks >/dev/null 2>&1
 systemctl enable rt-egress >/dev/null 2>&1
-# --no-block: when this runs as cloud-init user data, rt-egress waits for cloud-final to finish.
 systemctl restart --no-block rt-egress
 
 # ---------------------------------------------------------------- self-check (no token values printed)

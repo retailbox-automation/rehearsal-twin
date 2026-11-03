@@ -47,7 +47,8 @@ def test_service_mode_command():
         assert path in ro
     hidden = next(x for x in p if x.startswith("InaccessiblePaths=")).split("=", 1)[1].split()
     assert "-/run/systemd/private" in hidden and "-/run/dbus/system_bus_socket" in hidden
-    assert p[-1] == "ExecStopPost=+/bin/bash /opt/rt/state/rt-stoppost.sh /opt/rt/state/x.stats"
+    assert p[-1] == "ExecStopPost=+/bin/bash /opt/rt/state/rt-stoppost.sh /opt/rt/state/x.stats rt-run-ab12.service"
+    assert "IPAccounting=yes" in p
     assert not any("10.77.0.3" in x for x in p)
     assert not any(x.startswith("BindReadOnlyPaths=") for x in p)
     p2 = props(runner.build_command("u", "/s", 1, 1, 1, "/st", "/h", "/", resolv_path="/opt/rt/state/resolv.conf"))

@@ -64,6 +64,11 @@ d="/sys/fs/cgroup$cg"
   echo "memory_peak=$(cat "$d/memory.peak" 2>/dev/null)"
   echo "oom_kill=$(sed -n 's/^oom_kill //p' "$d/memory.events" 2>/dev/null)"
   echo "pids_max_events=$(sed -n 's/^max //p' "$d/pids.events" 2>/dev/null)"
+  if [ -n "$2" ]; then
+    for p in IPEgressPackets IPEgressBytes IPIngressPackets IPIngressBytes; do
+      echo "acct_$p=$(systemctl show "$2" --property="$p" --value 2>/dev/null)"
+    done
+  fi
 } > "$out.tmp" && mv -f "$out.tmp" "$out"
 """
 
@@ -91,7 +96,7 @@ def sandbox_properties(mem_bytes: int, pids: int, wall: float, allow=(), resolv_
     props = [
         f"MemoryMax={mem_bytes}", "MemorySwapMax=0", f"TasksMax={pids}",
         f"RuntimeMaxSec={max(1, math.ceil(wall))}", f"TimeoutStopSec={STOP_TIMEOUT_S}", "OOMPolicy=continue",
-        "IPAddressDeny=any", "IPAddressAllow=localhost", f"IPAddressAllow={FAKE_RANGE}",
+        "IPAccounting=yes", "IPAddressDeny=any", "IPAddressAllow=localhost", f"IPAddressAllow={FAKE_RANGE}",
     ]
     props += [f"IPAddressAllow={a}" for a in allow]
     props += [
@@ -122,7 +127,7 @@ def build_command(unit: str, script: str, mem_bytes: int, pids: int, wall: float
         argv += ["-E", e]
     for p in sandbox_properties(mem_bytes, pids, wall, allow, resolv_path):
         argv += ["-p", p]
-    argv += ["-p", f"ExecStopPost=+/bin/bash {helper_path} {stats_path}"]
+    argv += ["-p", f"ExecStopPost=+/bin/bash {helper_path} {stats_path} {unit}.service"]
     return argv + ["--", shell, script]
 
 
@@ -293,11 +298,16 @@ def run_script(script: str, wall: float, mem: str, pids: int, cwd: str | None = 
     peak = stats.get("memory_peak") if isinstance(stats.get("memory_peak"), int) else None
     oom_kills = stats.get("oom_kill") if isinstance(stats.get("oom_kill"), int) else 0
     result = stats.get("service_result")
+    acct = {}
+    for key, name in (("egress_packets", "acct_IPEgressPackets"), ("egress_bytes", "acct_IPEgressBytes"),
+                      ("ingress_packets", "acct_IPIngressPackets"), ("ingress_bytes", "acct_IPIngressBytes")):
+        acct[key] = stats.get(name) if isinstance(stats.get(name), int) else None
     wall_exceeded = result == "timeout"
     base.update({
         "unit_name": unit,
         "exit": exit_from_stats(stats, rc),
         "service_result": result,
+        "ip_accounting": acct,
         "stats_recorded": bool(stats),
         "wall_exceeded": wall_exceeded,
         "started_at": started,

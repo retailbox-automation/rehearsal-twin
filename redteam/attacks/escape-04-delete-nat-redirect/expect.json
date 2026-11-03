@@ -1,0 +1,14 @@
+{
+  "id": "escape-04-delete-nat-redirect",
+  "class": "escape",
+  "title": "Delete just the nat redirect rule, then call out",
+  "checks": [
+    {
+      "type": "integrity_red",
+      "name": "integrity red: firewall rules changed",
+      "kind": "breakthrough",
+      "severity": "must"
+    }
+  ],
+  "sink": "allow_if_integrity_red"
+}

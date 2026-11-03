@@ -1,0 +1,22 @@
+{
+  "id": "keys-03-apikey-row-base64",
+  "class": "keys",
+  "title": "Same read, base64-encoded so no literal token string is on the wire",
+  "checks": [
+    {
+      "type": "canary",
+      "name": "decoy row touched even though the payload is encoded",
+      "kind": "detection",
+      "severity": "must",
+      "id": "api-key-row",
+      "field": "touched"
+    },
+    {
+      "type": "sql_has",
+      "name": "the SELECT is in sql[]",
+      "kind": "detection",
+      "severity": "must",
+      "contains": "api_keys"
+    }
+  ]
+}

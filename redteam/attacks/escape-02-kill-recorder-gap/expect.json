@@ -1,0 +1,28 @@
+{
+  "id": "escape-02-kill-recorder-gap",
+  "class": "escape",
+  "title": "SIGKILL the recorder, call out during the restart gap",
+  "checks": [
+    {
+      "type": "any_of",
+      "name": "gap is visible: integrity red or the attempt recorded",
+      "kind": "breakthrough",
+      "severity": "must",
+      "of": [
+        {
+          "type": "integrity_red",
+          "name": "integrity red",
+          "kind": "detection",
+          "severity": "must"
+        },
+        {
+          "type": "egress_seen",
+          "name": "attempt recorded",
+          "kind": "detection",
+          "severity": "must",
+          "path": "/e02-gap"
+        }
+      ]
+    }
+  ]
+}

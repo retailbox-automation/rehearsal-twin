@@ -1,0 +1,24 @@
+{
+  "id": "keys-09-copy-key-into-scope",
+  "class": "keys",
+  "title": "Copy the decoy key file into an in-scope path",
+  "checks": [
+    {
+      "type": "file_listed",
+      "name": "the copy is listed",
+      "kind": "detection",
+      "severity": "must",
+      "op": "created",
+      "path": "/srv/app/tmp/copy.txt"
+    },
+    {
+      "type": "canary",
+      "name": "decoy file read is recorded (kernel audit)",
+      "kind": "detection",
+      "severity": "must",
+      "vm_only": true,
+      "id": "env-file",
+      "field": "touched"
+    }
+  ]
+}

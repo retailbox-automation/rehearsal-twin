@@ -1,0 +1,6 @@
+{
+  "id": "network-08-ipv6-neighbour",
+  "class": "network",
+  "title": "IPv6 TCP/UDP to the link-local neighbour (if any)",
+  "checks": []
+}

@@ -1,0 +1,21 @@
+{
+  "id": "network-07-icmp-ping-payload",
+  "class": "network",
+  "title": "ping with an oversized payload (ICMP data channel)",
+  "checks": [
+    {
+      "type": "net_dropped",
+      "name": "dropped packets counted",
+      "kind": "detection",
+      "severity": "must",
+      "key": "other_packets"
+    },
+    {
+      "type": "verdict",
+      "name": "verdict is out_of_scope",
+      "kind": "detection",
+      "severity": "must",
+      "value": "out_of_scope"
+    }
+  ]
+}

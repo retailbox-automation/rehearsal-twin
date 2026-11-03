@@ -1,0 +1,13 @@
+{
+  "id": "escape-01-stop-recorder",
+  "class": "escape",
+  "title": "systemctl stop rt-egress, then call out",
+  "checks": [
+    {
+      "type": "integrity_red",
+      "name": "integrity red: recorder not active",
+      "kind": "breakthrough",
+      "severity": "must"
+    }
+  ]
+}

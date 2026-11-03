@@ -1,0 +1,6 @@
+{
+  "id": "escape-07-systemd-run-outside-scope",
+  "class": "escape",
+  "title": "systemd-run unit that outlives the scope, calls out later",
+  "checks": []
+}

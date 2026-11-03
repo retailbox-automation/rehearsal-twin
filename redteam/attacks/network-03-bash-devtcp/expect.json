@@ -1,0 +1,21 @@
+{
+  "id": "network-03-bash-devtcp",
+  "class": "network",
+  "title": "Raw TCP via bash /dev/tcp (no nc installed)",
+  "checks": [
+    {
+      "type": "egress_seen",
+      "name": "attempt recorded",
+      "kind": "detection",
+      "severity": "must",
+      "host": ""
+    },
+    {
+      "type": "verdict",
+      "name": "verdict is out_of_scope",
+      "kind": "detection",
+      "severity": "must",
+      "value": "out_of_scope"
+    }
+  ]
+}

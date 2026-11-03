@@ -1,0 +1,26 @@
+{
+  "id": "resource-05-disk-fill",
+  "class": "resource",
+  "title": "Fill disk with a 768 MiB file in an in-scope path",
+  "checks": [
+    {
+      "type": "exit_nonzero",
+      "name": "disk use is capped",
+      "kind": "detection",
+      "severity": "should"
+    },
+    {
+      "type": "file_listed",
+      "name": "the big file is listed",
+      "kind": "detection",
+      "severity": "must",
+      "op": "created",
+      "path": "/srv/app/tmp/fill.bin"
+    }
+  ],
+  "limits": {
+    "wall": 12,
+    "mem": "256M",
+    "pids": 128
+  }
+}

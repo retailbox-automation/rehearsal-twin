@@ -216,7 +216,8 @@ def test_integrity_checks_for_sandbox_escape_attempts():
     good = diff.build_facts(s0, s1, run, src, CFG)["integrity"]
     assert good["ok"] is True
     assert good["checks"] == {"tracer_files": "unchanged", "firewall_rules": "unchanged", "routes": "unchanged",
-                              "egress_recorder": "running", "statement_logging": "unchanged", "sandbox": "service"}
+                              "egress_recorder": "running", "statement_logging": "unchanged", "sandbox": "service",
+                              "decoy_watch": "not available"}
 
     s1b = dict(s1, routes_sha256="rt2", egress_service={"active": "active", "main_pid": "11", "restarts": "1"})
     src["sql"].append({"user": "root", "db": "shop", "app": "psql", "statement": "SET log_statement = 'none'"})

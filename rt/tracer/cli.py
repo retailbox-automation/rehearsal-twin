@@ -83,6 +83,39 @@ def routes_digest() -> str | None:
     return h.hexdigest()
 
 
+def _auditctl(args, timeout: int = 10):
+    try:
+        return subprocess.run(["auditctl", *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def decoy_watches(defs, rearm: bool, run=_auditctl) -> str:
+    """State of the auditd watches on decoy files; re-arm them when asked.
+
+    The kernel drops a file watch when its parent directory is deleted, so after a
+    rehearsal that removed /srv/app the next one would see no reads without this.
+    """
+    files = [d for d in defs if d.get("kind") == "file" and d.get("path") and d.get("audit_key")]
+    if not files:
+        return "none"
+    listed = run(["-l"])
+    if listed is None or listed.returncode != 0:
+        return "unavailable"
+    missing = [d for d in files if f"-w {d['path']} " not in listed.stdout + " "]
+    if not missing:
+        return "armed"
+    if not rearm:
+        return "missing"
+    for d in missing:
+        if not os.path.exists(d["path"]):
+            return "missing"
+        p = run(["-w", d["path"], "-p", "rwa", "-k", d["audit_key"]])
+        if p is None or p.returncode != 0:
+            return "missing"
+    return "rearmed"
+
+
 def egress_service() -> dict:
     info = runner.show("rt-egress.service", "ActiveState", "MainPID", "NRestarts")
     return {"active": info.get("ActiveState"), "main_pid": info.get("MainPID"), "restarts": info.get("NRestarts")}
@@ -105,9 +138,10 @@ def self_digest(cfg: dict) -> str:
     return fsstate.tree_digest(m)
 
 
-def capture(cfg: dict, scope_raw=None, settle_max: float = 0.0) -> dict:
+def capture(cfg: dict, scope_raw=None, settle_max: float = 0.0, rearm: bool = False) -> dict:
     if settle_max > 0:
         settle(cfg, settle_max)
+    watch = decoy_watches(config.load_canaries(cfg.get("canaries_path", "")), rearm)
     offsets = log_offsets(cfg)
     taken = _now_iso()
     roots = tracked_roots(cfg, scope_raw)
@@ -123,6 +157,7 @@ def capture(cfg: dict, scope_raw=None, settle_max: float = 0.0) -> dict:
         "egress_service": egress_service(),
         "routes_sha256": routes_digest(),
         "self_digest": self_digest(cfg),
+        "decoy_watch": watch,
     }
 
 
@@ -207,7 +242,7 @@ def main(argv=None) -> int:
         return 2
 
     if args.cmd == "before":
-        out = capture(cfg, _load_json(args.scope) if args.scope else None)
+        out = capture(cfg, _load_json(args.scope) if args.scope else None, rearm=True)
     elif args.cmd == "after":
         out = capture(cfg, _load_json(args.scope) if args.scope else None, settle_max=args.settle_max)
     elif args.cmd == "run":

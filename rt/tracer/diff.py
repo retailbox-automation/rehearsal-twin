@@ -160,6 +160,7 @@ def integrity(state0: dict, state1: dict, run: dict, sql=(), egress_bad_lines: i
     elif run.get("unit_name") and not run.get("stats_recorded", True):
         issues.append("run statistics were not recorded")
     checks["sandbox"] = (run.get("sandbox") or {}).get("mode") or "none"
+    checks["decoy_watch"] = state0.get("decoy_watch") or "not available"
     return {"ok": not issues, "issues": issues, "checks": checks}
 
 

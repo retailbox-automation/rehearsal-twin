@@ -1,0 +1,10 @@
+{
+  "id": "c",
+  "name": "reprice_winter.sh",
+  "title": "Bulk price update with a missing pair of brackets and a webhook per row",
+  "goal": "Raise active winter and snow prices by 10%.",
+  "description": "Without brackets the WHERE clause also hits inactive winter rows. A trigger on prices makes the shop send one partner webhook per changed row. Declared scope: table prices with a budget of 31 rows, no hosts. The webhooks stay out of scope until the operator declares hooks.partner.example.",
+  "script": "reprice_winter.sh",
+  "scope": "scope.json",
+  "files": []
+}

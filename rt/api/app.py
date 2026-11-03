@@ -1,8 +1,10 @@
-"""API skeleton: serves the demo rehearsal fixture and the static screen."""
+"""API: the static screen plus either the demo fixture (RT_MODE=fixture, default) or the live
+orchestrator (RT_MODE=live, routes in rt/api/live.py)."""
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -37,13 +39,31 @@ async def replay(rehearsal: dict, pace: float):
     yield sse_frame(len(rehearsal["timeline"]), "done", {})
 
 
-def create_app() -> FastAPI:
+def create_app(mode: str | None = None, orchestrator=None, run_in_background=None) -> FastAPI:
+    mode = (mode or os.environ.get("RT_MODE") or "fixture").strip().lower()
+    if mode not in ("fixture", "live"):
+        raise ValueError(f"RT_MODE must be fixture or live, not {mode!r}")
     app = FastAPI(title="Rehearsal Twin", docs_url=None, redoc_url=None)
 
     @app.get("/api/health")
     def health() -> dict:
         return {"status": "ok"}
 
+    if mode == "live":
+        from rt.api.live import install
+        install(app, orchestrator, run_in_background=run_in_background)
+    else:
+        _fixture_routes(app)
+
+    @app.get("/")
+    def index() -> FileResponse:
+        return FileResponse(WEB_DIR / "index.html")
+
+    app.mount("/", StaticFiles(directory=WEB_DIR), name="web")
+    return app
+
+
+def _fixture_routes(app: FastAPI) -> None:
     @app.get("/api/rehearsals/{rid}")
     def get_rehearsal(rid: str) -> dict:
         return load_rehearsal(rid)
@@ -61,12 +81,13 @@ def create_app() -> FastAPI:
     def instances() -> dict:
         return {"instances": load_rehearsal("a")["instances"]}
 
-    @app.get("/")
-    def index() -> FileResponse:
-        return FileResponse(WEB_DIR / "index.html")
-
-    app.mount("/", StaticFiles(directory=WEB_DIR), name="web")
-    return app
+    @app.get("/api/stats")
+    def stats() -> dict:
+        r = load_rehearsal("a")
+        c = r["compare"]
+        match = c["predicted"] == c["happened"]
+        return {"_demo": r["_demo"], "twins_alive": sum(i["label"].startswith("twin-") for i in r["instances"]),
+                "runs": 1, "applied": 1, "matched": int(match), "match_rate": 1.0 if match else 0.0}
 
 
 app = create_app()

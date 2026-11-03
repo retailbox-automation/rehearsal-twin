@@ -56,7 +56,7 @@
       $("blocked-text").textContent = "";
       return;
     }
-    $("verdict-text").textContent = `deleted ${s.deleted_files} files`;
+    $("verdict-text").textContent = s.headline || `deleted ${s.deleted_files} files`;
     const o = $("outside-text");
     o.replaceChildren(el("em", "", String(s.outside_count)), document.createTextNode(` outside declared scope: ${s.outside_paths.join(", ")}`));
     const e = s.egress_line;
@@ -80,7 +80,9 @@
     let line = state.step && STEPS.indexOf(state.step) >= 1 ? `ledger sha256 ${short(h)}` : "";
     if (state.compare) {
       const c = state.r.compare;
-      line += `   predicted = happened: ${c.happened.files_changed} files, ${c.happened.rows_changed} rows, ${c.happened.egress_attempts} egress`;
+      line += c.match === false
+        ? `   predicted \u2260 happened: ${c.surprises.length} surprises`
+        : `   predicted = happened: ${c.happened.files_changed} files, ${c.happened.rows_changed} rows, ${c.happened.egress_attempts} egress`;
     }
     $("hash").textContent = line;
   }
@@ -102,6 +104,7 @@
   }
 
   function renderActions() {
+    if (state.r.receipt_url) $("receipt").href = state.r.receipt_url;
     const past = STEPS.indexOf(state.step) >= 2;
     $("approve").disabled = past;
     $("reject").disabled = past;
@@ -138,9 +141,28 @@
     for (const t of types) {
       src.addEventListener(t, (m) => { reduce(t, JSON.parse(m.data)); render(); });
     }
+    src.addEventListener("view", (m) => {  // live mode: the record as built from the real ledgers
+      const v = JSON.parse(m.data);
+      if (state.r && v.view_key !== state.r.view_key) {
+        document.querySelector("#ledger tbody").replaceChildren();
+        state.rows = 0;
+        state.summary = false;
+      }
+      state.r = Object.assign(v, { timeline: state.r ? state.r.timeline : [] });
+      renderStatic(); render();
+    });
     src.addEventListener("done", () => src.close());
     src.onerror = () => src.close();
   }
+
+  $("approve").addEventListener("click", async () => {
+    const a = state.r && state.r.approval;
+    if (!a) return;
+    $("approve").disabled = true;
+    const res = await fetch(`/api/rehearsals/${encodeURIComponent(state.r.id)}/approve`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(a) });
+    if (!res.ok) { $("approve").disabled = false; $("hash").textContent = `approval refused (${res.status})`; }
+  });
 
   async function main() {
     const res = await fetch(`/api/rehearsals/${encodeURIComponent(rid)}`);

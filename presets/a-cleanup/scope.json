@@ -1,0 +1,5 @@
+{
+  "paths": ["/srv/app/tmp"],
+  "tables": ["sessions"],
+  "hosts": []
+}

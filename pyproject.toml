@@ -9,7 +9,7 @@ description = "Run a risky script on a disposable twin of your server first, the
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
-dependencies = ["fastapi", "uvicorn"]
+dependencies = ["fastapi", "uvicorn", "cryptography"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx"]

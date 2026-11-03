@@ -1,0 +1,10 @@
+{
+  "id": "a",
+  "name": "cleanup.sh",
+  "title": "Nightly cleanup with an empty variable and a hidden call to the live API",
+  "goal": "Nightly cache cleanup: clear /srv/app/tmp/cache and expired sessions.",
+  "description": "CACHE_SUBDIR is empty in the cron environment, so rm -rf runs on /srv/* instead of /srv/app/tmp/cache/*. The last line calls the live purge API. Declared scope: one folder, one table, no hosts. A safe variant checks the variable, uses the literal cache path with rm -rf -- and drops the purge call.",
+  "script": "cleanup.sh",
+  "scope": "scope.json",
+  "files": []
+}

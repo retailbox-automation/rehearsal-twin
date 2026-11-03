@@ -138,11 +138,27 @@ def test_dropped_empty_table_is_still_reported():
     assert out[0]["item"] == "webhooks" and out[0]["op"] == "dropped"
 
 
-def test_dropped_udp_and_integrity_are_reported():
-    facts = {"egress_dropped": {"udp_packets": 3, "other_packets": 0},
+def test_script_denials_and_integrity_are_reported():
+    facts = {"egress_denied": {"packets": 3},
              "integrity": {"ok": False, "issues": ["rt-egress not active after the run"]}}
-    out, _ = scope_check(facts, {})
-    assert kinds(out) == [("integrity", "rt-egress not active after the run"), ("network", "udp_packets")]
+    out, summary = scope_check(facts, {})
+    assert kinds(out) == [("integrity", "rt-egress not active after the run"), ("network", "outbound packets")]
+    net = [e for e in out if e["kind"] == "network"][0]
+    assert net["op"] == "denied" and net["count"] == 3 and "denied" in net["reason"]
+    assert summary["egress_denied_packets"] == 3
+
+
+def test_system_noise_is_never_out_of_scope_nor_hashed():
+    from rt.ledger.canonical import ledger_sha256
+    quiet = {"files": {"deleted": ["/srv/app/tmp/cache/a"]}, "egress_denied": {"packets": 0}}
+    noisy = dict(quiet, system_noise={"udp_packets": 2, "other_packets": 1, "ipv6_packets": 4,
+                                      "routes_changed": True},
+                 drop_log=[{"chain": "other", "proto": "TCP"}], egress_dropped={"other_packets": 1})
+    a, b = finalize(quiet, {"paths": ["/srv/app/tmp"]}), finalize(noisy, {"paths": ["/srv/app/tmp"]})
+    assert a["summary"]["verdict"] == b["summary"]["verdict"] == "in_scope"
+    assert b["out_of_scope"] == []
+    noisy_no_legacy = {k: v for k, v in noisy.items() if k != "egress_dropped"}
+    assert ledger_sha256(finalize(noisy_no_legacy, {"paths": ["/srv/app/tmp"]})) == a["ledger_sha256"]
 
 
 INJECTIONS = [

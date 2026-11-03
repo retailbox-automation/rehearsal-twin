@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_*
+.pytest_cache/
+.ruff_cache/
+/.claude/worktrees/
+/bench/raw/
+/receipts/local/
+.DS_Store

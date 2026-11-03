@@ -52,6 +52,33 @@ def iptables_state() -> dict:
     return {"rules_sha256": egress.rules_digest(), "counters": egress.counters()}
 
 
+def routes_digest() -> str | None:
+    """Digest of every routing table (IPv4 and IPv6); None when it cannot be read."""
+    import hashlib
+    h = hashlib.sha256()
+    ok = False
+    for argv in (["ip", "-4", "route", "show", "table", "all"], ["ip", "-6", "route", "show", "table", "all"]):
+        try:
+            p = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if p.returncode == 0:
+            ok = True
+            h.update(p.stdout.encode())
+    if not ok:
+        try:
+            with open("/proc/net/route", encoding="utf-8") as f:
+                h.update(f.read().encode())
+        except OSError:
+            return None
+    return h.hexdigest()
+
+
+def egress_service() -> dict:
+    info = runner.show("rt-egress.service", "ActiveState", "MainPID", "NRestarts")
+    return {"active": info.get("ActiveState"), "main_pid": info.get("MainPID"), "restarts": info.get("NRestarts")}
+
+
 def tracked_roots(cfg: dict, scope_raw) -> list:
     roots = list(cfg.get("track_roots") or [])
     if scope_raw:
@@ -84,6 +111,8 @@ def capture(cfg: dict, scope_raw=None, settle_max: float = 0.0) -> dict:
         "pg": pgstate.snapshot(cfg),
         "iptables": iptables_state(),
         "egress_active": egress_active(),
+        "egress_service": egress_service(),
+        "routes_sha256": routes_digest(),
         "self_digest": self_digest(cfg),
     }
 
@@ -109,7 +138,8 @@ def cmd_run(args, cfg) -> dict:
     start_ipt = iptables_state()
     res = runner.run_script(args.script, wall=args.wall, mem=args.mem, pids=args.pids, cwd=args.cwd,
                             slice_name=cfg.get("run_slice", "rt.slice"),
-                            stats_dir=(cfg.get("self_root") or config.RT_HOME) + "/state")
+                            stats_dir=(cfg.get("self_root") or config.RT_HOME) + "/state",
+                            allow=tuple(cfg.get("sandbox_allow") or ()))
     res["kind"] = "rt-run"
     res["offsets_start"] = start_offsets
     res["offsets_end"] = log_offsets(cfg)

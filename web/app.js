@@ -211,6 +211,7 @@
     $("run").disabled = false;
     const d = body.detail || {};
     $("queue").textContent = res.status === 429 ? `not started: ${d.reason || "limit reached"}`
+      : res.status === 503 && d.error ? `not started: ${d.error}`
       : res.status === 401 ? "runs are closed right now" : `not started (${res.status})`;
   });
 
@@ -222,6 +223,7 @@
       let line = `queue \u00b7 ${q.running.length} running \u00b7 ${q.waiting.length} waiting \u00b7 ${q.cap} ${q.cap === 1 ? "twin" : "twins"} at a time`;
       if (mine) line += ` \u00b7 this run is #${mine.position}`;
       if (q.judge && q.judge.mode === "on") line += ` \u00b7 runs today ${q.judge.runs_today}/${q.judge.daily_budget}`;
+      if (q.judge && q.judge.paused_reason) line += ` \u00b7 judge runs paused (${q.judge.paused_reason})`;
       $("queue").textContent = line;
     } catch (e) { /* next poll */ }
   }

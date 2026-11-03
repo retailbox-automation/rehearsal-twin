@@ -13,3 +13,4 @@ id_*
 /bench/raw/
 /receipts/local/
 .DS_Store
+*.egg-info/

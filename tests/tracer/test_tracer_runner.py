@@ -21,6 +21,7 @@ def test_build_command_sets_limits_and_wrapper():
     assert "MemoryMax=536870912" in argv
     assert "MemorySwapMax=0" in argv
     assert "TasksMax=256" in argv
+    assert "OOMPolicy=continue" in argv
     sep = argv.index("--")
     assert argv[sep + 1:sep + 3] == ["/bin/bash", "-c"]
     assert argv[-3:] == ["/opt/rt/state/x.stats", "/bin/bash", "/opt/rt/work/s.sh"]

@@ -58,6 +58,9 @@ def build_command(unit: str, script: str, mem_bytes: int, pids: int, stats_path:
         "-p", f"MemoryMax={mem_bytes}",
         "-p", "MemorySwapMax=0",
         "-p", f"TasksMax={pids}",
+        # Without this systemd stops the whole scope on the first OOM kill and the
+        # wrapper never gets to record what happened.
+        "-p", "OOMPolicy=continue",
         "--", "/bin/bash", "-c", WRAPPER, "rt-scope-wrap", stats_path, shell, script,
     ]
 

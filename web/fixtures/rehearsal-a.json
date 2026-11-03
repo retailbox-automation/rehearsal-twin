@@ -1,0 +1,463 @@
+{
+ "_demo": "Every number in this file is a demo placeholder; real values come from a rehearsal run.",
+ "id": "a",
+ "preset": "cleanup.sh",
+ "presets": [
+  "cleanup.sh",
+  "migrate_0042.sh",
+  "reprice_winter.sh"
+ ],
+ "script": {
+  "name": "cleanup.sh",
+  "lines": [
+   "DIR=\"\"",
+   "rm -rf \"$DIR\"/*",
+   "curl -X POST https://prod-api/purge"
+  ]
+ },
+ "scope": {
+  "paths": [
+   "/srv/app/tmp"
+  ],
+  "tables": {
+   "sessions": {}
+  },
+  "hosts": []
+ },
+ "steps": [
+  "rehearse",
+  "review",
+  "apply",
+  "compare"
+ ],
+ "prod": {
+  "name": "prod-shop-01",
+  "uptime_s": 3564720
+ },
+ "twin": {
+  "label": "twin-7f2",
+  "subtitle": "Vultr VM from snapshot \u00b7 VPC-only \u00b7 no keys"
+ },
+ "twin_ledger": {
+  "files": {
+   "created": [],
+   "modified": [],
+   "deleted": [
+    "/srv/app/tmp/cache/c-001.bin",
+    "/srv/app/tmp/cache/c-002.bin",
+    "/srv/app/tmp/cache/c-003.bin",
+    "/srv/app/tmp/cache/c-004.bin",
+    "/srv/app/tmp/cache/c-005.bin",
+    "/srv/app/tmp/cache/c-006.bin",
+    "/srv/app/tmp/cache/c-007.bin",
+    "/srv/app/tmp/cache/c-008.bin",
+    "/srv/app/tmp/cache/c-009.bin",
+    "/srv/app/tmp/cache/c-010.bin",
+    "/srv/app/tmp/cache/c-011.bin",
+    "/srv/app/tmp/cache/c-012.bin",
+    "/srv/app/tmp/cache/c-013.bin",
+    "/srv/app/tmp/cache/c-014.bin",
+    "/srv/app/tmp/cache/c-015.bin",
+    "/srv/app/tmp/cache/c-016.bin",
+    "/srv/app/tmp/cache/c-017.bin",
+    "/srv/app/tmp/cache/c-018.bin",
+    "/srv/app/tmp/cache/c-019.bin",
+    "/srv/app/tmp/cache/c-020.bin",
+    "/srv/app/tmp/cache/c-021.bin",
+    "/srv/app/tmp/cache/c-022.bin",
+    "/srv/app/tmp/cache/c-023.bin",
+    "/srv/app/tmp/cache/c-024.bin",
+    "/srv/app/tmp/cache/c-025.bin",
+    "/srv/app/tmp/cache/c-026.bin",
+    "/srv/app/tmp/cache/c-027.bin",
+    "/srv/app/tmp/cache/c-028.bin",
+    "/srv/app/tmp/cache/c-029.bin",
+    "/srv/app/tmp/cache/c-030.bin",
+    "/srv/app/tmp/cache/c-031.bin",
+    "/srv/app/tmp/cache/c-032.bin",
+    "/srv/app/tmp/cache/c-033.bin",
+    "/srv/app/tmp/cache/c-034.bin",
+    "/srv/app/tmp/cache/c-035.bin",
+    "/srv/app/tmp/cache/c-036.bin",
+    "/srv/app/tmp/cache/c-037.bin",
+    "/srv/app/tmp/cache/c-038.bin",
+    "/srv/app/tmp/cache/c-039.bin",
+    "/srv/app/tmp/cache/c-040.bin",
+    "/srv/app/tmp/cache/c-041.bin",
+    "/srv/app/tmp/cache/c-042.bin",
+    "/srv/app/tmp/cache/c-043.bin",
+    "/srv/app/tmp/cache/c-044.bin",
+    "/srv/app/tmp/cache/c-045.bin",
+    "/srv/app/tmp/cache/c-046.bin",
+    "/srv/app/tmp/cache/c-047.bin",
+    "/srv/app/tmp/cache/c-048.bin",
+    "/srv/app/tmp/cache/c-049.bin",
+    "/srv/app/tmp/cache/c-050.bin",
+    "/srv/app/tmp/cache/c-051.bin",
+    "/srv/app/tmp/cache/c-052.bin",
+    "/srv/app/tmp/cache/c-053.bin",
+    "/srv/app/tmp/cache/c-054.bin",
+    "/srv/app/tmp/cache/c-055.bin",
+    "/srv/app/tmp/cache/c-056.bin",
+    "/srv/app/tmp/cache/c-057.bin",
+    "/srv/app/tmp/cache/c-058.bin",
+    "/srv/app/tmp/cache/c-059.bin",
+    "/srv/app/tmp/cache/c-060.bin",
+    "/srv/app/tmp/cache/c-061.bin",
+    "/srv/app/tmp/cache/c-062.bin",
+    "/srv/app/tmp/cache/c-063.bin",
+    "/srv/app/tmp/cache/c-064.bin",
+    "/srv/app/tmp/cache/c-065.bin",
+    "/srv/app/tmp/cache/c-066.bin",
+    "/srv/app/tmp/cache/c-067.bin",
+    "/srv/app/tmp/cache/c-068.bin",
+    "/srv/app/tmp/cache/c-069.bin",
+    "/srv/app/tmp/cache/c-070.bin",
+    "/srv/app/tmp/cache/c-071.bin",
+    "/srv/app/tmp/cache/c-072.bin",
+    "/srv/app/tmp/cache/c-073.bin",
+    "/srv/app/tmp/cache/c-074.bin",
+    "/srv/app/tmp/cache/c-075.bin",
+    "/srv/app/tmp/cache/c-076.bin",
+    "/srv/app/tmp/cache/c-077.bin",
+    "/srv/app/tmp/cache/c-078.bin",
+    "/srv/app/tmp/cache/c-079.bin",
+    "/srv/app/tmp/cache/c-080.bin",
+    "/srv/app/tmp/cache/c-081.bin",
+    "/srv/app/tmp/cache/c-082.bin",
+    "/srv/app/tmp/cache/c-083.bin",
+    "/srv/app/tmp/cache/c-084.bin",
+    "/srv/app/tmp/cache/c-085.bin",
+    "/srv/app/tmp/cache/c-086.bin",
+    "/srv/app/tmp/cache/c-087.bin",
+    "/srv/app/tmp/cache/c-088.bin",
+    "/srv/app/tmp/cache/c-089.bin",
+    "/srv/app/tmp/cache/c-090.bin",
+    "/srv/app/tmp/cache/c-091.bin",
+    "/srv/app/tmp/cache/c-092.bin",
+    "/srv/app/tmp/cache/c-093.bin",
+    "/srv/app/tmp/cache/c-094.bin",
+    "/srv/app/tmp/cache/c-095.bin",
+    "/srv/app/tmp/cache/c-096.bin",
+    "/srv/app/tmp/cache/c-097.bin",
+    "/srv/app/tmp/cache/c-098.bin",
+    "/srv/app/tmp/cache/c-099.bin",
+    "/srv/app/tmp/cache/c-100.bin",
+    "/srv/app/tmp/cache/c-101.bin",
+    "/srv/app/tmp/cache/c-102.bin",
+    "/srv/app/tmp/cache/c-103.bin",
+    "/srv/app/tmp/cache/c-104.bin",
+    "/srv/app/tmp/cache/c-105.bin",
+    "/srv/app/tmp/cache/c-106.bin",
+    "/srv/app/tmp/cache/c-107.bin",
+    "/srv/app/tmp/cache/c-108.bin",
+    "/srv/app/tmp/cache/c-109.bin",
+    "/srv/app/tmp/cache/c-110.bin",
+    "/srv/app/tmp/cache/c-111.bin",
+    "/srv/app/tmp/cache/c-112.bin",
+    "/srv/app/tmp/cache/c-113.bin",
+    "/srv/app/tmp/cache/c-114.bin",
+    "/srv/app/tmp/cache/c-115.bin",
+    "/srv/app/tmp/cache/c-116.bin",
+    "/srv/app/tmp/cache/c-117.bin",
+    "/srv/app/tmp/cache/c-118.bin",
+    "/srv/app/tmp/cache/c-119.bin",
+    "/srv/app/tmp/cache/c-120.bin",
+    "/srv/app/tmp/cache/c-121.bin",
+    "/srv/app/tmp/cache/c-122.bin",
+    "/srv/app/tmp/cache/c-123.bin",
+    "/srv/app/tmp/cache/c-124.bin",
+    "/srv/app/tmp/cache/c-125.bin",
+    "/srv/app/tmp/cache/c-126.bin",
+    "/srv/app/tmp/cache/c-127.bin",
+    "/srv/app/tmp/cache/c-128.bin",
+    "/srv/app/tmp/cache/c-129.bin",
+    "/srv/app/tmp/cache/c-130.bin",
+    "/srv/app/tmp/cache/c-131.bin",
+    "/srv/app/tmp/cache/c-132.bin",
+    "/srv/app/tmp/cache/c-133.bin",
+    "/srv/app/tmp/cache/c-134.bin",
+    "/srv/app/tmp/cache/c-135.bin",
+    "/srv/app/tmp/cache/c-136.bin",
+    "/srv/app/tmp/cache/c-137.bin",
+    "/srv/app/tmp/cache/c-138.bin",
+    "/srv/app/tmp/cache/c-139.bin",
+    "/srv/app/tmp/cache/c-140.bin",
+    "/srv/app/tmp/cache/c-141.bin",
+    "/srv/app/tmp/cache/c-142.bin",
+    "/srv/app/tmp/cache/c-143.bin",
+    "/srv/app/tmp/cache/c-144.bin",
+    "/srv/app/tmp/cache/c-145.bin",
+    "/srv/app/tmp/cache/c-146.bin",
+    "/srv/app/tmp/cache/c-147.bin",
+    "/srv/app/tmp/cache/c-148.bin",
+    "/srv/app/tmp/cache/c-149.bin",
+    "/srv/app/tmp/cache/c-150.bin",
+    "/var/lib/sessions/sess-1",
+    "/var/lib/sessions/sess-2",
+    "/var/lib/sessions/sess-3",
+    "/srv/shared/logs/app-01.log",
+    "/srv/shared/logs/app-02.log",
+    "/srv/shared/logs/app-03.log",
+    "/srv/shared/logs/app-04.log",
+    "/srv/shared/logs/app-05.log",
+    "/srv/shared/logs/app-06.log",
+    "/srv/shared/logs/app-07.log",
+    "/srv/shared/logs/app-08.log",
+    "/srv/shared/logs/app-09.log",
+    "/srv/shared/logs/app-10.log",
+    "/srv/shared/logs/app-11.log",
+    "/srv/shared/logs/app-12.log",
+    "/srv/shared/logs/app-13.log",
+    "/srv/shared/logs/app-14.log",
+    "/srv/shared/logs/app-15.log",
+    "/srv/shared/logs/app-16.log",
+    "/srv/shared/logs/app-17.log",
+    "/srv/shared/logs/app-18.log",
+    "/srv/shared/logs/app-19.log",
+    "/srv/shared/logs/app-20.log",
+    "/srv/shared/logs/app-21.log",
+    "/srv/shared/logs/app-22.log",
+    "/srv/shared/logs/app-23.log",
+    "/srv/shared/logs/app-24.log",
+    "/srv/shared/logs/app-25.log",
+    "/srv/shared/logs/app-26.log",
+    "/srv/shared/logs/app-27.log",
+    "/srv/shared/logs/app-28.log",
+    "/srv/shared/logs/app-29.log",
+    "/srv/shared/logs/app-30.log",
+    "/srv/shared/logs/app-31.log",
+    "/srv/shared/logs/app-32.log",
+    "/srv/shared/logs/app-33.log",
+    "/srv/shared/logs/app-34.log",
+    "/srv/shared/logs/app-35.log",
+    "/srv/shared/logs/app-36.log",
+    "/srv/shared/logs/app-37.log",
+    "/srv/shared/logs/app-38.log",
+    "/srv/shared/logs/app-39.log",
+    "/srv/shared/logs/app-40.log",
+    "/srv/shared/logs/app-41.log",
+    "/srv/shared/logs/app-42.log",
+    "/srv/shared/logs/app-43.log",
+    "/srv/shared/logs/app-44.log",
+    "/srv/shared/logs/app-45.log",
+    "/srv/shared/logs/app-46.log",
+    "/srv/shared/logs/app-47.log",
+    "/srv/shared/logs/app-48.log",
+    "/srv/shared/logs/app-49.log",
+    "/srv/shared/logs/app-50.log",
+    "/srv/shared/logs/app-51.log",
+    "/srv/shared/logs/app-52.log",
+    "/srv/shared/logs/app-53.log",
+    "/srv/shared/logs/app-54.log",
+    "/srv/shared/logs/app-55.log",
+    "/srv/shared/logs/app-56.log",
+    "/srv/shared/logs/app-57.log",
+    "/srv/shared/logs/app-58.log",
+    "/srv/shared/logs/app-59.log",
+    "/srv/shared/logs/app-60.log",
+    "/etc/cron.d/nightly"
+   ]
+  },
+  "rows": {
+   "sessions": {
+    "inserted": 0,
+    "deleted": 312,
+    "updated": 0
+   }
+  },
+  "sql": [
+   "DELETE FROM sessions WHERE expires_at < now()"
+  ],
+  "egress": [
+   {
+    "method": "POST",
+    "host": "prod-api",
+    "path": "/purge",
+    "port": 443,
+    "bytes_attempted": 14,
+    "delivered": 0
+   }
+  ],
+  "canaries": [],
+  "exit": 0,
+  "limits": {
+   "wall_s": 60,
+   "peak_mem_mb": 38,
+   "oom": false,
+   "pids_max": 256
+  },
+  "out_of_scope": [
+   {
+    "kind": "path",
+    "target": "/srv/shared/logs",
+    "count": 60,
+    "reason": "path not in /srv/app/tmp"
+   },
+   {
+    "kind": "path",
+    "target": "/etc/cron.d/nightly",
+    "count": 1,
+    "reason": "path not in /srv/app/tmp"
+   },
+   {
+    "kind": "host",
+    "target": "prod-api",
+    "count": 1,
+    "reason": "host not declared (scope hosts: none)"
+   }
+  ],
+  "ledger_sha256": "9f3c00000000000000000000000000000000000000000000000000000000a71e"
+ },
+ "ledger_view": [
+  {
+   "target": "/srv/app/tmp/cache",
+   "verdict": "in_scope",
+   "delta": "-150 files",
+   "reason": ""
+  },
+  {
+   "target": "/srv/shared/logs",
+   "verdict": "out_of_scope",
+   "delta": "-60 files",
+   "reason": "path not in /srv/app/tmp"
+  },
+  {
+   "target": "/etc/cron.d/nightly",
+   "verdict": "out_of_scope",
+   "delta": "-1 file",
+   "reason": "path not in /srv/app/tmp"
+  },
+  {
+   "target": "/var/lib/sessions",
+   "verdict": "in_scope",
+   "delta": "-3 files",
+   "reason": ""
+  }
+ ],
+ "summary": {
+  "deleted_files": 214,
+  "outside_count": 61,
+  "outside_paths": [
+   "/srv/shared",
+   "/etc/cron.d"
+  ],
+  "egress_line": {
+   "method": "POST",
+   "target": "prod-api/purge",
+   "note": "blocked, recorded, 0 bytes delivered"
+  }
+ },
+ "instances": [
+  {
+   "id": "i-prod-1",
+   "label": "prod-shop-01",
+   "dot": "green",
+   "meta": "public"
+  },
+  {
+   "id": "i-twin-7f2",
+   "label": "twin-7f2",
+   "dot": "blue",
+   "meta": "rehearsal \u00b7 no public IPv4"
+  }
+ ],
+ "compare": {
+  "predicted": {
+   "files_changed": 150,
+   "rows_changed": 312,
+   "egress_attempts": 0
+  },
+  "happened": {
+   "files_changed": 150,
+   "rows_changed": 312,
+   "egress_attempts": 0
+  },
+  "surprises": []
+ },
+ "timeline": [
+  {
+   "delay_ms": 0,
+   "type": "step",
+   "data": {
+    "step": "rehearse"
+   }
+  },
+  {
+   "delay_ms": 600,
+   "type": "instance_add",
+   "data": {
+    "id": "i-twin-7f2"
+   }
+  },
+  {
+   "delay_ms": 900,
+   "type": "ledger_row",
+   "data": {
+    "index": 0
+   }
+  },
+  {
+   "delay_ms": 450,
+   "type": "ledger_row",
+   "data": {
+    "index": 1
+   }
+  },
+  {
+   "delay_ms": 450,
+   "type": "ledger_row",
+   "data": {
+    "index": 2
+   }
+  },
+  {
+   "delay_ms": 450,
+   "type": "ledger_row",
+   "data": {
+    "index": 3
+   }
+  },
+  {
+   "delay_ms": 500,
+   "type": "twin_summary",
+   "data": {}
+  },
+  {
+   "delay_ms": 700,
+   "type": "step",
+   "data": {
+    "step": "review"
+   }
+  },
+  {
+   "delay_ms": 3500,
+   "type": "step",
+   "data": {
+    "step": "apply"
+   }
+  },
+  {
+   "delay_ms": 800,
+   "type": "prod_counters",
+   "data": {
+    "files_changed": 150,
+    "rows_changed": 312
+   }
+  },
+  {
+   "delay_ms": 600,
+   "type": "instance_remove",
+   "data": {
+    "id": "i-twin-7f2"
+   }
+  },
+  {
+   "delay_ms": 1200,
+   "type": "step",
+   "data": {
+    "step": "compare"
+   }
+  }
+ ]
+}

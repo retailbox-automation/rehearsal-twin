@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rehearsal Twin</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <h1 class="brand">Rehearsal <span>Twin</span></h1>
+  <div class="vsep"></div>
+  <label class="preset"><select id="preset" aria-label="Preset"></select></label>
+  <ol class="steps" id="steps">
+    <li data-step="rehearse"><i>1</i><span>Rehearse</span></li>
+    <li data-step="review"><i>2</i><span>Review</span></li>
+    <li data-step="apply"><i>3</i><span>Apply</span></li>
+    <li data-step="compare"><i>4</i><span>Compare</span></li>
+  </ol>
+</header>
+
+<main class="grid">
+  <section class="panel script">
+    <h2 id="script-name">cleanup.sh</h2>
+    <div class="code" id="code"></div>
+    <h3>Declared scope</h3>
+    <dl class="scope" id="scope">
+      <dt>paths:</dt><dd id="scope-paths"></dd>
+      <dt>tables:</dt><dd id="scope-tables"></dd>
+      <dt>hosts:</dt><dd id="scope-hosts"></dd>
+    </dl>
+  </section>
+
+  <section class="panel twin" id="twin" data-state="idle">
+    <h2>TWIN</h2>
+    <p class="sub" id="twin-sub"></p>
+    <svg class="cube" viewBox="0 0 300 220" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <radialGradient id="glow-red" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#ff3b4e" stop-opacity=".55"/><stop offset="1" stop-color="#ff3b4e" stop-opacity="0"/></radialGradient>
+        <linearGradient id="red-top" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff8a93" stop-opacity=".55"/><stop offset="1" stop-color="#d63044" stop-opacity=".35"/></linearGradient>
+        <linearGradient id="red-left" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e5384c" stop-opacity=".5"/><stop offset="1" stop-color="#7a1426" stop-opacity=".55"/></linearGradient>
+        <linearGradient id="red-right" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b3253a" stop-opacity=".55"/><stop offset="1" stop-color="#4a0f1e" stop-opacity=".7"/></linearGradient>
+      </defs>
+      <ellipse cx="150" cy="178" rx="140" ry="36" fill="url(#glow-red)"/>
+      <polygon points="150,150 262,172 150,206 38,172" fill="#2a0f22" stroke="#ff4a5c" stroke-width="1.5"/>
+      <polygon points="64,172 76,176 70,180 58,176" fill="#ff4a5c" opacity=".85"/>
+      <polygon points="96,181 108,185 102,189 90,185" fill="#ff4a5c" opacity=".85"/>
+      <polygon points="190,185 202,181 208,185 196,189" fill="#ff4a5c" opacity=".85"/>
+      <polygon points="222,177 234,173 240,177 228,181" fill="#ff4a5c" opacity=".85"/>
+      <g stroke="#ff6272" stroke-width="2" stroke-linejoin="round">
+        <polygon points="150,22 240,62 150,102 60,62" fill="url(#red-top)"/>
+        <polygon points="60,62 150,102 150,176 60,136" fill="url(#red-left)"/>
+        <polygon points="150,102 240,62 240,136 150,176" fill="url(#red-right)"/>
+      </g>
+      <g fill="#1a0a16" stroke="#ff6272" stroke-width="1" opacity=".95">
+        <polygon points="168,111 228,84 228,128 168,155"/>
+      </g>
+      <g stroke="#ff6272" stroke-width="1.4" opacity=".7">
+        <line x1="168" y1="124" x2="228" y2="97"/><line x1="168" y1="134" x2="228" y2="107"/><line x1="168" y1="144" x2="228" y2="117"/>
+      </g>
+      <polygon points="104,100 124,111 104,122 84,111" fill="none"/>
+      <polygon points="104,92 118,118 90,118" fill="#ff4a5c" stroke="#ffd5d9" stroke-width="2" stroke-linejoin="round"/>
+      <rect x="102.6" y="100" width="2.8" height="10" fill="#fff"/><rect x="102.6" y="112.5" width="2.8" height="2.8" fill="#fff"/>
+    </svg>
+    <div class="verdict" id="verdict"><svg viewBox="0 0 24 24" class="tri"><path d="M12 2 1 21h22z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M12 9v6M12 17.4v.2" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg><b id="verdict-text">waiting for rehearsal</b></div>
+    <p class="outside" id="outside"><svg viewBox="0 0 24 24" class="ico"><circle cx="12" cy="12" r="10" fill="currentColor"/><path d="M12 6.5v7M12 16.5v.3" stroke="#12102c" stroke-width="2.4" stroke-linecap="round"/></svg><span id="outside-text"></span></p>
+    <p class="blocked" id="blocked"><svg viewBox="0 0 24 24" class="ico"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M5.3 5.3l13.4 13.4" stroke="currentColor" stroke-width="2.2"/></svg><span id="blocked-text"></span></p>
+  </section>
+
+  <section class="panel prod" id="prod">
+    <h2>PROD</h2>
+    <svg class="cube" viewBox="0 0 300 220" aria-hidden="true">
+      <defs>
+        <radialGradient id="glow-blue" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#2e9bff" stop-opacity=".5"/><stop offset="1" stop-color="#2e9bff" stop-opacity="0"/></radialGradient>
+        <linearGradient id="blue-top" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8fd6ff" stop-opacity=".5"/><stop offset="1" stop-color="#2f80ff" stop-opacity=".3"/></linearGradient>
+        <linearGradient id="blue-left" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2d8cff" stop-opacity=".4"/><stop offset="1" stop-color="#0b2a78" stop-opacity=".5"/></linearGradient>
+        <linearGradient id="blue-right" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1f6fe0" stop-opacity=".4"/><stop offset="1" stop-color="#081a52" stop-opacity=".6"/></linearGradient>
+      </defs>
+      <ellipse cx="150" cy="176" rx="140" ry="34" fill="url(#glow-blue)"/>
+      <polygon points="150,152 262,172 150,204 38,172" fill="#0a1d52" stroke="#2f90ff" stroke-width="1.5"/>
+      <g stroke="#58bfff" stroke-width="2" stroke-linejoin="round">
+        <polygon points="150,22 240,62 150,102 60,62" fill="url(#blue-top)"/>
+        <polygon points="60,62 150,102 150,176 60,136" fill="url(#blue-left)"/>
+        <polygon points="150,102 240,62 240,136 150,176" fill="url(#blue-right)"/>
+      </g>
+      <polygon points="98,96 140,115 140,163 98,144" fill="#071a44" stroke="#58bfff" stroke-width="1"/>
+      <g stroke="#58bfff" stroke-width="1.4" opacity=".75">
+        <line x1="104" y1="108" x2="134" y2="121"/><line x1="104" y1="119" x2="134" y2="132"/><line x1="104" y1="130" x2="134" y2="143"/><line x1="104" y1="141" x2="134" y2="154"/>
+      </g>
+      <circle cx="136" cy="132" r="2.4" fill="#1ad1a3"/>
+    </svg>
+    <div class="counters">
+      <div class="counter"><span>files changed</span><b id="files-changed">0</b></div>
+      <div class="counter"><span>rows changed</span><b id="rows-changed">0</b></div>
+    </div>
+    <p class="uptime">uptime <b id="uptime"></b></p>
+  </section>
+
+  <section class="panel instances">
+    <h2>Vultr instances</h2>
+    <ul id="instances"></ul>
+  </section>
+
+  <section class="panel ledger">
+    <h2>Side-effect ledger</h2>
+    <table id="ledger"><tbody></tbody></table>
+    <p class="hash" id="hash"></p>
+  </section>
+
+  <aside class="actions">
+    <button class="approve" id="approve">Approve safer variant</button>
+    <button class="reject" id="reject">Reject</button>
+    <hr>
+    <a class="receipt" id="receipt" href="#"><svg viewBox="0 0 24 24"><path d="M6 2.5h8.5L19 7v14.5H6z M14 2.5V7.5h5 M9 12h7 M9 15.5h7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>Receipt</a>
+  </aside>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

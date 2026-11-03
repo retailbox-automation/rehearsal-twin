@@ -39,8 +39,24 @@ def test_screen_rows_match_ledger():
     assert deleted == body["summary"]["deleted_files"]
     outside = sum(o["count"] for o in body["twin_ledger"]["out_of_scope"] if o["kind"] == "path")
     assert outside == body["summary"]["outside_count"]
-    shown = sum(int(r["delta"].split()[0].lstrip("-")) for r in body["ledger_view"])
-    assert shown == deleted
+    paths = [r for r in body["ledger_view"] if not r["target"].startswith("table ")]
+    assert sum(int(r["delta"].split()[0].lstrip("-")) for r in paths) == deleted
+    # a table row is in scope only if the table is declared, and its count is the ledger's
+    for r in body["ledger_view"]:
+        if r["target"].startswith("table "):
+            name = r["target"][len("table "):]
+            assert (r["verdict"] == "in_scope") == (name in body["scope"]["tables"])
+            assert r["delta"] == f"-{body['twin_ledger']['rows'][name]['deleted']} rows"
+    # no deleted file sits under a path the screen calls in scope without being under the declared paths
+    for r in paths:
+        under = any(r["target"].startswith(p) for p in body["scope"]["paths"])
+        assert (r["verdict"] == "in_scope") == under
+
+
+def test_fixture_presets_listed_with_names():
+    items = client.get("/api/presets").json()["presets"]
+    assert [(i["id"], i["name"]) for i in items] == [("a", "cleanup.sh"), ("b", "migrate_0042.sh"),
+                                                      ("c", "reprice_winter.sh")]
 
 
 def test_unknown_rehearsal_is_404():

@@ -36,7 +36,7 @@
  },
  "twin": {
   "label": "twin-7f2",
-  "subtitle": "Vultr VM from snapshot \u00b7 VPC-only \u00b7 no keys"
+  "subtitle": "Vultr VM from snapshot · VPC-only · no keys"
  },
  "twin_ledger": {
   "files": {
@@ -193,9 +193,6 @@
     "/srv/app/tmp/cache/c-148.bin",
     "/srv/app/tmp/cache/c-149.bin",
     "/srv/app/tmp/cache/c-150.bin",
-    "/var/lib/sessions/sess-1",
-    "/var/lib/sessions/sess-2",
-    "/var/lib/sessions/sess-3",
     "/srv/shared/logs/app-01.log",
     "/srv/shared/logs/app-02.log",
     "/srv/shared/logs/app-03.log",
@@ -329,14 +326,14 @@
    "reason": "path not in /srv/app/tmp"
   },
   {
-   "target": "/var/lib/sessions",
+   "target": "table sessions",
    "verdict": "in_scope",
-   "delta": "-3 files",
+   "delta": "-312 rows",
    "reason": ""
   }
  ],
  "summary": {
-  "deleted_files": 214,
+  "deleted_files": 211,
   "outside_count": 61,
   "outside_paths": [
    "/srv/shared",
@@ -359,7 +356,7 @@
    "id": "i-twin-7f2",
    "label": "twin-7f2",
    "dot": "blue",
-   "meta": "rehearsal \u00b7 no public IPv4"
+   "meta": "rehearsal · no public IPv4"
   }
  ],
  "compare": {

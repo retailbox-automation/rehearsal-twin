@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any, Callable, Protocol
 
 RT_BIN = "/opt/rt/bin/rtrace"
@@ -95,7 +96,7 @@ def manifest_changes(old: dict[str, str], new: dict[str, str], limit: int = 20) 
 
 
 def work_dir(run: str) -> str:
-    if not run or not all(c.isalnum() or c == "-" for c in run):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,79}", run or ""):
         raise ValueError(f"bad run name {run!r}")
     return f"{WORK}/{run}"
 

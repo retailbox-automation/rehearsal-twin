@@ -90,6 +90,9 @@ class SSH:
         self.key_file = key
         self.user = user
         self.jump = jump if jump is not None else (os.environ.get("RT_JUMP_HOST") or None)
+        if self.jump and "@" in self.jump:  # accept "user@host" as well as "host"
+            embedded_user, self.jump = self.jump.rsplit("@", 1)
+            jump_user = jump_user or embedded_user
         self.jump_user = jump_user or user
         self.connect_timeout_s = connect_timeout_s
         self.runner = runner

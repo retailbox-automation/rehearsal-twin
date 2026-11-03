@@ -1,6 +1,7 @@
 (() => {
   const qs = new URLSearchParams(location.search);
-  const rid = qs.get("id") || "a";
+  const asked = qs.get("id");
+  const rid = asked || "latest";            // live: the newest rehearsal; fixture: falls back to "a"
   const freezeAt = qs.get("at");            // render a still frame at this step, no streaming
   const pace = qs.get("pace");              // forwarded to the event stream
   const $ = (id) => document.getElementById(id);
@@ -136,7 +137,7 @@
 
   function playLive() {
     state.animate = true;
-    const src = new EventSource(`/api/rehearsals/${encodeURIComponent(rid)}/events${pace !== null ? `?pace=${encodeURIComponent(pace)}` : ""}`);
+    const src = new EventSource(`/api/rehearsals/${encodeURIComponent(state.r.id || rid)}/events${pace !== null ? `?pace=${encodeURIComponent(pace)}` : ""}`);
     const types = ["step", "instance_add", "instance_remove", "ledger_row", "twin_summary", "prod_counters"];
     for (const t of types) {
       src.addEventListener(t, (m) => { reduce(t, JSON.parse(m.data)); render(); });
@@ -159,15 +160,64 @@
     const a = state.r && state.r.approval;
     if (!a) return;
     $("approve").disabled = true;
+    const owner = sessionStorage.getItem(`rt-owner-${state.r.id}`);  // judges approve their own run
+    const headers = { "Content-Type": "application/json" };
+    if (owner) headers["X-RT-Owner"] = owner;
     const res = await fetch(`/api/rehearsals/${encodeURIComponent(state.r.id)}/approve`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(a) });
+      method: "POST", headers, body: JSON.stringify(a) });
     if (!res.ok) { $("approve").disabled = false; $("hash").textContent = `approval refused (${res.status})`; }
   });
 
+  // Live mode: run the preset in the selector; the queue line shows where the run stands.
+  const live = () => state.r && (state.r.mode === "live" || state.r.empty);
+  $("run").addEventListener("click", async () => {
+    const name = $("preset").value;
+    const opt = (state.r.preset_options || []).find((o) => o.name === name);
+    if (!opt) return;
+    $("run").disabled = true;
+    const res = await fetch("/api/rehearsals", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preset: opt.id }) });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      if (body.owner_key) sessionStorage.setItem(`rt-owner-${body.id}`, body.owner_key);
+      location.href = `/?id=${encodeURIComponent(body.id)}`;
+      return;
+    }
+    $("run").disabled = false;
+    const d = body.detail || {};
+    $("queue").textContent = res.status === 429 ? `not started: ${d.reason || "limit reached"}`
+      : res.status === 401 ? "runs are closed right now" : `not started (${res.status})`;
+  });
+
+  async function pollQueue() {
+    if (!live()) return;
+    try {
+      const q = await (await fetch("/api/queue")).json();
+      const mine = q.waiting.find((w) => w.id === state.r.id);
+      let line = `queue \u00b7 ${q.running.length} running \u00b7 ${q.waiting.length} waiting \u00b7 ${q.cap} ${q.cap === 1 ? "twin" : "twins"} at a time`;
+      if (mine) line += ` \u00b7 this run is #${mine.position}`;
+      if (q.judge && q.judge.mode === "on") line += ` \u00b7 runs today ${q.judge.runs_today}/${q.judge.daily_budget}`;
+      $("queue").textContent = line;
+    } catch (e) { /* next poll */ }
+  }
+
+  function emptyRecord(r) {  // live, nothing rehearsed yet: an idle screen with the run button
+    const names = (r.preset_options || []).map((o) => o.name);
+    return Object.assign({ script: { name: "", lines: [] }, scope: { paths: [], tables: {}, hosts: [] },
+      presets: names, preset: names[0], twin: { label: "twin", subtitle: "Vultr VM from snapshot \u00b7 VPC-only \u00b7 no keys" },
+      prod: { name: "prod", uptime_s: 0 }, twin_ledger: { ledger_sha256: "" }, ledger_view: [], instances: [],
+      summary: {}, timeline: [] }, r);
+  }
+
   async function main() {
-    const res = await fetch(`/api/rehearsals/${encodeURIComponent(rid)}`);
+    let res = await fetch(`/api/rehearsals/${encodeURIComponent(rid)}`);
+    if (!res.ok && !asked) res = await fetch("/api/rehearsals/a");  // fixture mode
     state.r = await res.json();
+    if (state.r.empty) state.r = emptyRecord(state.r);
+    $("run").disabled = !live();
+    if (live()) { pollQueue(); setInterval(pollQueue, 3000); }
     renderStatic();
+    if (state.r.empty) { render(); return; }
     // The prod instance is always listed; the twin appears with its instance_add event.
     state.added = new Set(state.r.instances.filter((i) => i.dot === "green").map((i) => i.id));
     render();

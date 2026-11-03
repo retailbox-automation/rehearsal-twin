@@ -86,6 +86,9 @@ for n in $REQUIRED; do grep -q "^$n=." "$ENV_FILE" || absent="$absent $n"; done
 if [ -n "$absent" ]; then
   log "warning: $ENV_FILE lacks:$absent (the API starts; rehearsals answer 503 until they are set)"
 fi
+grep -q "^RT_API_TOKEN=." "$ENV_FILE" \
+  || log "warning: $ENV_FILE lacks RT_API_TOKEN (operator POSTs and the hourly production reset need it)"
+grep -q "^RT_JUDGE_MODE=on" "$ENV_FILE" || log "note: judge mode is off (RT_JUDGE_MODE=on lets anyone run a preset)"
 key_path=$(sed -n 's/^RT_SSH_KEY_FILE=//p' "$ENV_FILE" | tail -1)
 if [ -n "$key_path" ] && ! runuser -u "$SVC_USER" -- test -r "$key_path"; then
   log "warning: RT_SSH_KEY_FILE is not readable by user $SVC_USER (suggested place: $ENV_DIR/ssh/, mode 600)"
@@ -122,9 +125,63 @@ LockPersonality=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+# ---------------------------------------------------------------- timers: reaper every 5 min, production reset hourly
+# Reaper: deletes rt-twin instances older than RT_REAPER_TTL_S unless a live lease of the API holds them.
+# Reset: asks the API to restore production from RT_GOLDEN_SNAPSHOT_ID, only when no rehearsal is open.
+# Each tick writes one JSON line to the journal (journalctl -u rt-reaper / -u rt-prod-reset).
+timer_service() {  # timer_service NAME DESCRIPTION SUBCOMMAND
+  cat > "/etc/systemd/system/$1.service" <<EOF
+[Unit]
+Description=$2
+After=network-online.target $SVC.service
+
+[Service]
+Type=oneshot
+User=$SVC_USER
+Group=$SVC_USER
+Environment=RT_DATA_DIR=$DATA_DIR RT_API_URL=http://127.0.0.1:$RT_PORT PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=$ENV_FILE
+WorkingDirectory=$APP_DIR
+ExecStart=$VENV/bin/python -m rt.orchestrator $3
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=$DATA_DIR
+EOF
+}
+timer_service rt-reaper "Rehearsal Twin reaper (one tick)" reap
+timer_service rt-prod-reset "Rehearsal Twin production reset to the golden snapshot (one tick)" restore-tick
+cat > /etc/systemd/system/rt-reaper.timer <<'EOF'
+[Unit]
+Description=Rehearsal Twin reaper every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
+EOF
+cat > /etc/systemd/system/rt-prod-reset.timer <<'EOF'
+[Unit]
+Description=Rehearsal Twin production reset every hour (skipped while rehearsals are open)
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
+EOF
+
 systemctl daemon-reload
 systemctl enable "$SVC" >/dev/null 2>&1
 systemctl restart "$SVC"
+systemctl enable --now rt-reaper.timer rt-prod-reset.timer >/dev/null 2>&1
 
 # ---------------------------------------------------------------- firewall (Vultr Ubuntu images ship ufw active with only 22/tcp open;
 # without 80/443 the ACME HTTP-01 challenge times out and no certificate is issued — seen live 2026-11-03)
@@ -167,5 +224,6 @@ health="NO ANSWER"
 [ -z "$ok" ] || health="ok"
 log "service $SVC: $(systemctl is-active "$SVC" 2>/dev/null || true), health on 127.0.0.1:$RT_PORT: $health"
 log "service caddy: $(systemctl is-active caddy 2>/dev/null || true), site $SITE"
+log "timers: rt-reaper $(systemctl is-active rt-reaper.timer 2>/dev/null || true), rt-prod-reset $(systemctl is-active rt-prod-reset.timer 2>/dev/null || true)"
 [ -n "$ok" ] || { journalctl -u "$SVC" -n 30 --no-pager >&2 || true; exit 1; }
 log "done"

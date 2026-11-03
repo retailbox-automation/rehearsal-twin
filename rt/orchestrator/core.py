@@ -13,21 +13,32 @@
     apply(): same tracer on production; before the script runs its state must still have the
             approved version -> ledger re-checked here -> compare(twin, prod) -> signed receipt
 
+    restore_prod(): Prod.restore(golden snapshot); the timer asks only when nothing is open; after it,
+            every rehearsal awaiting approval whose twin started from exactly the restored state
+            gets its prod_state_version re-based onto it (others keep theirs and will get 409)
+
 The twin's verdict is never trusted: a ledger whose facts do not give its own scope check
 and hash on this machine is rejected. The model never decides in/out of scope.
 Every step appends an event to events.jsonl; the API streams it as SSE.
+
+Concurrency: rehearsals queue (FIFO) and at most RT_MAX_TWINS_ALIVE run at once, each holding
+at most one twin, leased so the reaper never takes it. Everything that touches production
+(state probe, approval probe, apply, restore) holds one production lock.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
+from collections import deque
 from typing import Any, Callable
 
 from rt.ledger import compare as ledger_compare
 from rt.ledger import finalize, ledger_sha256, normalize_scope, verify
 from rt.ledger.scope import ScopeError
 from rt.orchestrator import remote
+from rt.orchestrator.leases import Leases
 from rt.orchestrator.presets import load_presets
 from rt.orchestrator.settings import Settings
 from rt.orchestrator.store import Store, UnknownRehearsal, new_id, utc_now
@@ -65,9 +76,20 @@ def _err(e: BaseException) -> str:
     return f"{type(e).__name__}: {e}"[:500]
 
 
+def _thread(fn: Callable[[], object]) -> None:
+    def safe():
+        try:
+            fn()
+        except Exception as e:  # each task records its own failure; this is the last resort
+            print(f"rt.orchestrator: background task failed: {_err(e)}", flush=True)
+    threading.Thread(target=safe, daemon=True).start()
+
+
 class Orchestrator:
     def __init__(self, settings: Settings, store: Store | None = None, *, vultr, ssh_factory: Callable[[], Any],
-                 planner=None, safety=None, signer=None, inference=None):
+                 planner=None, safety=None, signer=None, inference=None,
+                 spawn: Callable[[Callable[[], object]], None] | None = None, sleep: Callable[[float], Any] = time.sleep,
+                 heartbeat: bool = True):
         self.s = settings
         self.store = store or Store(settings.data_dir)
         self.vultr = vultr
@@ -77,8 +99,14 @@ class Orchestrator:
         self.signer = signer
         self.inference = inference or getattr(planner, "client", None) or getattr(safety, "client", None)
         self.presets = load_presets(settings.presets_dir)
+        self.spawn = spawn or _thread
+        self.sleep = sleep
+        self.leases = Leases(settings.data_dir, start_heartbeat=heartbeat)
         self._lock = threading.RLock()
-        self._running: str | None = None
+        self._queue: deque[str] = deque()
+        self._active: set[str] = set()
+        self._prod_lock = threading.RLock()
+        self._prod_owner: str | None = None
 
     # ------------------------------------------------------------------ records and events
     def _emit(self, rid: str, type_: str, data: dict | None = None) -> None:
@@ -116,8 +144,12 @@ class Orchestrator:
         prod = self.store.read_json(rid, "prod-ledger.json") if self.store.has_file(rid, "prod-ledger.json") else None
         cmp = self.store.read_json(rid, "compare.json") if self.store.has_file(rid, "compare.json") else None
         events = self.store.events(rid) if with_timeline else None
-        return screen_view(rec, presets=[p.name for p in self.presets.values()], ledger=ledger, prod_ledger=prod,
+        view = screen_view(rec, presets=[p.name for p in self.presets.values()], ledger=ledger, prod_ledger=prod,
                            compare=cmp, events=events)
+        view["preset_options"] = [{"id": p.id, "name": p.name} for p in self.presets.values()]
+        view["origin"] = rec.get("origin")
+        view["queue"] = self.queue_position(rid)
+        return view
 
     def ledgers(self, rid: str) -> dict:
         rec = self.load(rid)
@@ -151,7 +183,8 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ create
     def create(self, *, preset: str | None = None, script: str | None = None, goal: str | None = None,
-               scope: dict | None = None) -> dict:
+               scope: dict | None = None, origin: str = "operator", owner_sha256: str | None = None,
+               client_tag: str | None = None) -> dict:
         if self.s.missing:
             raise NotConfigured("missing settings: " + ", ".join(self.s.missing))
         files: dict[str, bytes] = {}
@@ -181,8 +214,8 @@ class Orchestrator:
             raise ValueError(f"goal must be at most {MAX_GOAL_CHARS} characters")
 
         with self._lock:
-            if self._running:
-                raise Busy(f"rehearsal {self._running} is running")
+            if self.queue_full():
+                raise Busy(f"the queue is full ({self.s.max_queue} waiting)")
             rid = new_id()
             while self.store.exists(rid):
                 rid = new_id()
@@ -195,11 +228,11 @@ class Orchestrator:
                 "prod_instance_id": self.s.prod_instance_id, "prod_label": self.s.prod_label,
                 "twin_plan": self.s.twin_plan, "attempts": [], "approvable": None, "approval": None,
                 "approved": None, "apply": None, "receipt": None, "llm_calls": [],
+                "origin": origin, "owner_sha256": owner_sha256, "client_tag": client_tag,
             }
             self.store.create(rec)
             for k, v in files.items():
                 self.store.write_file(rid, f"file-{k}", v)
-            self._running = rid
         self._emit(rid, "status", {"status": "queued"})
         self._emit_view(rec)
         return rec
@@ -245,9 +278,6 @@ class Orchestrator:
         finally:
             rec = self._reload(rec)
             self._collect_llm(rec, llm_mark)
-            with self._lock:
-                if self._running == rid:
-                    self._running = None
             self._emit_view(rec)
             if rec["status"] in TERMINAL:
                 self._emit(rid, "done", {"status": rec["status"]})
@@ -286,10 +316,21 @@ class Orchestrator:
         self._emit(rid, "plan", {"rationale": plan["rationale"], "script_sha256": sha256_hex(script.encode())})
         return script
 
-    def _check_twin_cap(self) -> None:
-        alive = [i for i in self.vultr.list_instances(tag=TWIN_TAG) if TWIN_TAG in (i.get("tags") or [])]
-        if len(alive) >= self.s.max_twins_alive:
-            raise Busy(f"{len(alive)} twins alive, cap is {self.s.max_twins_alive}")
+    def _check_twin_cap(self, rid: str) -> None:
+        """Wait (up to RT_TWIN_SLOT_WAIT_S) until fewer than RT_MAX_TWINS_ALIVE twins exist on the account."""
+        deadline = time.monotonic() + self.s.twin_slot_wait_s
+        told = False
+        while True:
+            alive = [i for i in self.vultr.list_instances(tag=TWIN_TAG) if TWIN_TAG in (i.get("tags") or [])]
+            if len(alive) < self.s.max_twins_alive:
+                return
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise Busy(f"{len(alive)} twins alive, cap is {self.s.max_twins_alive}")
+            if not told:
+                self._emit(rid, "waiting", {"reason": f"{len(alive)} twins alive, cap {self.s.max_twins_alive}"})
+                told = True
+            self.sleep(min(15.0, left))
 
     def _files(self, rec: dict) -> dict[str, bytes]:
         return {k: self.store.read_file(rec["id"], f"file-{k}") for k in rec.get("files") or {}}
@@ -307,10 +348,13 @@ class Orchestrator:
 
         twin_rid = f"{n}{rid}"
         try:
-            self._check_twin_cap()
+            self._check_twin_cap(rid)
+            self.leases.take(twin_rid, rid)  # before create: the reaper skips the rt:<twin_rid> tag from now on
             twin = Twin.create(rec["snapshot_id"], twin_rid, rec["vpc_id"], rec["twin_plan"], region=self.s.region,
                                client=self.vultr, ssh=self.ssh_factory())
+            self.leases.bind(twin_rid, twin.id)
         except Exception as e:
+            self.leases.drop(twin_rid)
             a["status"], a["error"] = "failed", _err(e)
             self._save(rec)
             raise
@@ -339,6 +383,7 @@ class Orchestrator:
             except Exception as e:  # the reaper TTL is the backstop; say so loudly
                 a["twin"]["destroy_error"] = _err(e)
                 self._emit(rid, "error", {"message": f"twin {twin.id} not destroyed: {_err(e)}"})
+            self.leases.drop(twin_rid)  # released either way: a twin that failed to delete is the reaper's
             self._save(rec)
             self._emit(rid, "instance_remove", {"id": twin.id, "destroyed": a["twin"]["destroyed"]})
 
@@ -402,6 +447,10 @@ class Orchestrator:
         return Prod.attach(self.s.prod_instance_id, client=self.vultr, ssh=self.ssh_factory(), vpc_id=self.s.vpc_id)
 
     def _probe_prod(self, rec: dict, tag: str) -> tuple[str, dict, float | None]:
+        with self._prod_lock:
+            return self._probe_prod_locked(rec, tag)
+
+    def _probe_prod_locked(self, rec: dict, tag: str) -> tuple[str, dict, float | None]:
         prod = self._prod()
         run = f"{rec['id']}-{tag}"
         state = remote.read_state(prod, run, rec["scope"])
@@ -440,8 +489,8 @@ class Orchestrator:
             rid = rec["id"]
             if rec.get("status") != "awaiting_approval":
                 raise Conflict([f"rehearsal is {rec.get('status')}, not awaiting approval"])
-            if self._running:
-                raise Busy(f"rehearsal {self._running} is running")
+            if self._prod_owner:
+                raise Busy(f"production is busy ({'restore' if self._prod_owner == 'restore' else 'apply'})")
             appr = rec["approval"]
             reasons = [f"{k} does not match the rehearsal" for k in APPROVAL_FIELDS
                        if not isinstance(req.get(k), str) or req.get(k) != appr[k]]
@@ -456,9 +505,14 @@ class Orchestrator:
             if reasons:
                 self._emit(rid, "approval_refused", {"reasons": reasons})
                 raise Conflict(reasons)
-            self._running = rid
+            self._prod_owner = rid
         try:
-            version, manifest, _ = self._probe_prod(rec, "approve")
+            if not self._prod_lock.acquire(timeout=10):
+                raise Busy("production is busy")
+            try:
+                version, manifest, _ = self._probe_prod_locked(rec, "approve")
+            finally:
+                self._prod_lock.release()
             if version != appr["prod_state_version"]:
                 old = self.store.read_json(rid, "prod-state-rehearsal.json")
                 reasons = ["prod_state_version: production changed since the rehearsal"]
@@ -472,8 +526,8 @@ class Orchestrator:
             return rec
         except BaseException:
             with self._lock:
-                if self._running == rid:
-                    self._running = None
+                if self._prod_owner == rid:
+                    self._prod_owner = None
             raise
 
     def apply(self, rid: str) -> dict:
@@ -488,8 +542,9 @@ class Orchestrator:
             if sha256_hex(script) != rec["approved"]["script_sha256"]:
                 raise RuntimeError("stored script does not match the approved hash")
             self._emit(rid, "step", {"step": "apply"})
-            prod = self._prod()
+            self._prod_lock.acquire()
             try:
+                prod = self._prod()
                 result = remote.trace(
                     prod, f"{rid}-apply", script, rec["scope"], self._files(rec), wall_s=self.s.wall_s,
                     mem=self.s.mem, pids=self.s.pids,
@@ -502,6 +557,8 @@ class Orchestrator:
                 self._emit(rid, "error", {"message": f"apply aborted before the script ran: {e}",
                                           "changes": e.changed})
                 return rec
+            finally:
+                self._prod_lock.release()
             prod_ledger = result["ledger"]
             self.store.write_json(rid, "prod-ledger.json", prod_ledger)
             problems = verify(prod_ledger, rec["scope"])
@@ -534,8 +591,8 @@ class Orchestrator:
         finally:
             rec = self._reload(rec)
             with self._lock:
-                if self._running == rid:
-                    self._running = None
+                if self._prod_owner == rid:
+                    self._prod_owner = None
             self._emit_view(rec)
             self._emit(rid, "done", {"status": rec["status"]})
         return rec
@@ -580,6 +637,160 @@ class Orchestrator:
         }
         return self.signer.sign(body) if self.signer is not None else body
 
+    # ------------------------------------------------------------------ queue
+    def queue_full(self) -> bool:
+        with self._lock:
+            return len(self._queue) >= self.s.max_queue
+
+    def submit(self, rid: str) -> None:
+        """Queue a created rehearsal; it starts when one of RT_MAX_TWINS_ALIVE slots is free."""
+        with self._lock:
+            if rid in self._queue or rid in self._active:
+                return
+            self._queue.append(rid)
+        self._emit(rid, "queue", self.queue_position(rid))
+        self._dispatch()
+
+    def _dispatch(self) -> None:
+        while True:
+            with self._lock:
+                if not self._queue or len(self._active) >= self.s.max_twins_alive:
+                    return
+                rid = self._queue.popleft()
+                self._active.add(rid)
+            self.spawn(lambda rid=rid: self._run_slot(rid))
+
+    def _run_slot(self, rid: str) -> None:
+        try:
+            self.run(rid)
+        except Exception as e:  # run() records its own failures; a refusal here is logged on the record
+            self._emit(rid, "error", {"message": _err(e)})
+        finally:
+            with self._lock:
+                self._active.discard(rid)
+            self._dispatch()
+
+    def queue_position(self, rid: str) -> dict:
+        with self._lock:
+            waiting = list(self._queue)
+            running = sorted(self._active)
+        return {"position": waiting.index(rid) + 1 if rid in waiting else None, "waiting": len(waiting),
+                "running": len(running), "cap": self.s.max_twins_alive}
+
+    def queue_state(self) -> dict:
+        with self._lock:
+            waiting = list(self._queue)
+            running = sorted(self._active)
+
+        def item(rid: str, pos: int | None) -> dict:
+            try:
+                r = self.store.load(rid)
+            except UnknownRehearsal:
+                return {"id": rid, "position": pos}
+            return {"id": rid, "name": r.get("name"), "preset": r.get("preset"), "status": r.get("status"),
+                    "origin": r.get("origin"), "position": pos}
+
+        return {"running": [item(r, None) for r in running], "waiting": [item(r, i + 1) for i, r in enumerate(waiting)],
+                "cap": self.s.max_twins_alive, "max_queue": self.s.max_queue}
+
+    # ------------------------------------------------------------------ production reset
+    def _prod_status_path(self):
+        return self.s.data_dir / "prod-status.json"
+
+    def prod_status(self) -> dict:
+        try:
+            return json.loads(self._prod_status_path().read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {"status": "unknown"}
+
+    def _set_prod_status(self, **fields) -> dict:
+        from rt.orchestrator.store import _atomic_write
+        st = {**self.prod_status(), **fields}
+        _atomic_write(self._prod_status_path(), json.dumps(st, sort_keys=True, indent=1).encode())
+        return st
+
+    def open_rehearsals(self) -> list[str]:
+        """Rehearsals a reset would disturb: queued or running, applying, or awaiting approval recently."""
+        now = time.time()
+        out = []
+        for rid in self.store.ids():
+            r = self.store.load(rid)
+            st = r.get("status")
+            if st in RUNNING:
+                out.append(rid)
+            elif st == "awaiting_approval":
+                age = now - (self.store.dir(rid) / "record.json").stat().st_mtime
+                if age < self.s.approval_window_s:
+                    out.append(rid)
+        with self._lock:
+            out += [r for r in list(self._queue) + list(self._active) if r not in out]
+        return out
+
+    def reserve_restore(self, *, only_if_idle: bool) -> dict | None:
+        """Claim production for a reset. Returns a skip reason, or None when the reset may start."""
+        with self._lock:
+            if self._prod_owner:
+                if only_if_idle:
+                    return {"status": "skipped", "reason": f"production is busy ({self._prod_owner})"}
+                raise Busy(f"production is busy ({self._prod_owner})")
+            if only_if_idle:
+                busy = self.open_rehearsals()
+                if busy:
+                    return {"status": "skipped", "reason": "rehearsals are open", "open": busy}
+            self._prod_owner = "restore"
+        return None
+
+    def restore_prod(self, *, origin: str = "operator") -> dict:
+        """Restore production from the golden snapshot (after reserve_restore), then re-base approvals."""
+        with self._lock:
+            if self._prod_owner != "restore":
+                raise RuntimeError("call reserve_restore first")
+        started = utc_now()
+        self._set_prod_status(status="restoring", started_at=started, origin=origin, snapshot_id=self.s.snapshot_id,
+                              error=None)
+        try:
+            with self._prod_lock:
+                prod = self._prod()
+                secs = prod.restore(self.s.snapshot_id, timeout=self.s.restore_timeout_s, poll_s=self.s.restore_poll_s,
+                                    settle_s=self.s.restore_settle_s)
+                rebased = self._rebase_after_restore()
+            return self._set_prod_status(status="idle", last_restore_at=utc_now(), last_restore_started_at=started,
+                                         last_restore_s=secs, rebased=rebased)
+        except Exception as e:
+            self._set_prod_status(status="error", error=_err(e))
+            raise
+        finally:
+            with self._lock:
+                if self._prod_owner == "restore":
+                    self._prod_owner = None
+
+    def _rebase_after_restore(self) -> dict:
+        """Re-read production's state version for every rehearsal awaiting approval.
+
+        The approval is re-based only when production now equals the state the twin started from:
+        then the ledger predicts exactly this production. Otherwise the old version stays and the
+        approval answers 409 with the changed paths and tables.
+        """
+        out = {}
+        for rid in self.store.ids():
+            rec = self.store.load(rid)
+            if rec.get("status") != "awaiting_approval" or not rec.get("approval"):
+                continue
+            version, manifest, uptime = self._probe_prod_locked(rec, "restore")
+            a = self._attempt(rec, rec["approvable"])
+            if version == rec["approval"]["prod_state_version"]:
+                out[rid] = "unchanged"
+            elif version == a.get("twin_state_version"):
+                self.store.write_json(rid, "prod-state-rehearsal.json", manifest)
+                approval = {**rec["approval"], "prod_state_version": version}
+                self._save(rec, approval=approval, prod_uptime_s=uptime, snapshot_matches_prod=True, snapshot_drift=[])
+                self._emit(rid, "approval", approval)
+                self._emit_view(rec)
+                out[rid] = "rebased"
+            else:
+                out[rid] = "stale"
+        return out
+
     # ------------------------------------------------------------------ fleet and stats
     def instances(self) -> list[dict]:
         out = []
@@ -602,8 +813,10 @@ class Orchestrator:
         applied = [r for r in records if (r.get("apply") or {}).get("status") == "done"]
         matched = [r for r in applied if r["apply"].get("match")]
         twins = sum(1 for i in self.instances() if i["dot"] == "blue")
+        q = self.queue_state()
         return {"twins_alive": twins, "runs": len(records), "applied": len(applied), "matched": len(matched),
                 "match_rate": round(len(matched) / len(applied), 4) if applied else None,
+                "queue": {"running": len(q["running"]), "waiting": len(q["waiting"]), "cap": q["cap"]},
                 "statuses": {s: sum(1 for r in records if r.get("status") == s)
                              for s in sorted({r.get("status") for r in records})}}
 

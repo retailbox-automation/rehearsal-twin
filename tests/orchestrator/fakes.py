@@ -36,6 +36,7 @@ class FakeTarget:
         self.phases: list[str] = []
         self.fail: dict[str, object] = {}
         self.tamper: Callable[[dict], dict] | None = None
+        self.on_phase: Callable[[str], None] | None = None
 
     def _fail(self, phase: str):
         what = self.fail.get(phase)
@@ -58,6 +59,8 @@ class FakeTarget:
             for phase in ("before", "run", "after"):
                 if f"{RT_BIN} {phase} " in body:
                     self.phases.append(phase)
+                    if self.on_phase:
+                        self.on_phase(phase)
                     failed = self._fail(phase)
                     if failed:
                         return failed

@@ -157,3 +157,17 @@ def test_control_deploy_script_is_valid_bash():
     assert subprocess.run(["bash", "-n", str(script)], capture_output=True).returncode == 0
     text = script.read_text()
     assert "/etc/rt/env" in text and "127.0.0.1" in text and "flush_interval -1" in text
+
+
+def test_cli_presets_and_missing_settings(tmp_path, monkeypatch, capsys):
+    from rt.orchestrator.__main__ import main as cli
+    from rt.orchestrator.settings import LIVE_REQUIRED
+    for name in LIVE_REQUIRED:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("RT_DATA_DIR", str(tmp_path / "data"))
+    assert cli(["presets"]) == 0
+    assert [json.loads(line)["id"] for line in capsys.readouterr().out.splitlines()] == ["a", "b", "c"]
+    assert cli(["run", "--preset", "a"]) == 2
+    err = capsys.readouterr().err
+    assert "missing settings" in err and "VULTR_API_KEY" in err
+    assert not (tmp_path / "data").exists()

@@ -31,6 +31,18 @@ def _int(env: Mapping[str, str], name: str, default: int) -> int:
         return default
 
 
+def _cap(env: Mapping[str, str], name: str, default: float) -> float:
+    """A safety cap: unset -> default; unreadable or negative -> 0 (fail closed)."""
+    raw = env.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return 0.0
+    return value if value >= 0 and value == value else 0.0
+
+
 def _float(env: Mapping[str, str], name: str, default: float) -> float:
     try:
         return float(env.get(name) or default)
@@ -71,6 +83,8 @@ class Settings:
     judge_runs_per_ip_hour: int = 3
     daily_run_budget: int = 30
     max_queue: int = 10
+    spend_cap_usd: float = 150.0
+    spend_cache_s: float = 600.0
     missing: list[str] = field(default_factory=list)
 
     @classmethod
@@ -107,5 +121,7 @@ class Settings:
             judge_runs_per_ip_hour=max(0, _int(env, "RT_JUDGE_RUNS_PER_IP_HOUR", 3)),
             daily_run_budget=max(0, _int(env, "RT_DAILY_RUN_BUDGET", 30)),
             max_queue=max(0, _int(env, "RT_MAX_QUEUE", 10)),
+            spend_cap_usd=_cap(env, "RT_SPEND_CAP_USD", 150.0),
+            spend_cache_s=max(1.0, _float(env, "RT_SPEND_CACHE_S", 600.0)),
             missing=[n for n in LIVE_REQUIRED if not env.get(n)],
         )

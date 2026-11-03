@@ -87,18 +87,31 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
-def reap_tick_cli(settings: Settings, ttl: float | None, dry_run: bool) -> int:
+def reap_tick_cli(settings: Settings, ttl: float | None, dry_run: bool, vultr_factory=None) -> int:
     from rt.orchestrator.leases import append_log, reap_tick
     from rt.twin.vultr import Vultr
 
+    if vultr_factory is not None:
+        Vultr = vultr_factory  # noqa: N806 (tests pass a client bound to the fake API)
+
+    from rt.orchestrator.spend import read_pending
+
+    client = None
     try:
-        line = reap_tick(Vultr(timing=lambda _line: None), settings.data_dir,
+        client = Vultr(timing=lambda _line: None)
+        line = reap_tick(client, settings.data_dir,
                          ttl_s=settings.reaper_ttl_s if ttl is None else ttl, stale_s=settings.lease_stale_s,
                          dry_run=dry_run)
         code = 0
     except Exception as e:  # one line per tick, failures included
         line = {"ts": utc_now(), "error": f"{type(e).__name__}: {e}"[:300]}
         code = 1
+    if client is not None:  # the same line leaves a trace of the account's pending charges
+        try:
+            line["spend_pending"] = read_pending(client)
+        except Exception as e:
+            line["spend_error"] = type(e).__name__
+        line["spend_cap"] = settings.spend_cap_usd
     line["tick"] = "reap"
     _print(line)
     try:

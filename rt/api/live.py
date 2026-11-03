@@ -35,6 +35,7 @@ from pydantic import BaseModel
 
 from rt.orchestrator import Busy, Conflict, NotConfigured, Orchestrator, Settings, UnknownRehearsal, build_live
 from rt.orchestrator.judge import JudgeGate, Limited, client_address, new_owner_key, owner_matches
+from rt.orchestrator.spend import SpendGuard
 
 
 class RehearsalIn(BaseModel):
@@ -90,13 +91,15 @@ def install(app: FastAPI, orch: Orchestrator | None = None, *, run_in_background
             problem = str(e)
         except Exception as e:  # e.g. an unreadable signing key: keep serving health and say why (no values)
             problem = f"{type(e).__name__}: {e}"
-    gate = None
+    gate = spend = None
     if orch is not None:
         if run_in_background is not None:
             orch.spawn = run_in_background
         orch.recover()
         gate = JudgeGate(settings.data_dir, per_ip_hour=settings.judge_runs_per_ip_hour,
                          daily_budget=settings.daily_run_budget)
+        spend = SpendGuard(orch.vultr, settings.spend_cap_usd, cache_s=settings.spend_cache_s)
+    app.state.spend = spend
 
     def need() -> Orchestrator:
         if orch is None:
@@ -143,6 +146,12 @@ def install(app: FastAPI, orch: Orchestrator | None = None, *, run_in_background
                 raise HTTPException(401, "a free script, goal or scope needs the token; judges run presets")
             if not body.preset or body.preset not in o.presets:
                 raise HTTPException(400, f"preset must be one of {sorted(o.presets)}")
+            sp = spend.check()
+            if sp["paused_reason"]:
+                what = "spend cap" if sp["paused_reason"].startswith("spend cap") else "spend unknown"
+                return JSONResponse({"detail": {"error": f"judge mode paused: {what}", "reason": sp["paused_reason"],
+                                                "spend_pending": sp["spend_pending"],
+                                                "spend_cap": sp["spend_cap"]}}, status_code=503)
             if o.queue_full():
                 return limited(Limited("the queue is full", 60))
             ip = address(request)
@@ -233,7 +242,12 @@ def install(app: FastAPI, orch: Orchestrator | None = None, *, run_in_background
     def queue() -> dict:
         o = need()
         q = o.queue_state()
-        q["judge"] = {"mode": "on" if settings.judge_mode else "off", **(gate.status() if gate else {})}
+        judge = {"mode": "on" if settings.judge_mode else "off", **(gate.status() if gate else {})}
+        if settings.judge_mode and spend is not None:
+            sp = spend.check()
+            judge.update(spend_pending=sp["spend_pending"], spend_cap=sp["spend_cap"],
+                         paused_reason=sp["paused_reason"])
+        q["judge"] = judge
         return q
 
     @app.get("/api/prod")

@@ -69,6 +69,16 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.delenv("RT_JUMP_HOST", raising=False)
     vf = FakeVultr().start()
     inf = FakeInference().start()
+    vf.account = {"balance": -200.0, "pending_charges": 0.11}
+    vf_dispatch = vf._dispatch
+
+    def dispatch(handler, method, path, query, body):  # GET /v2/account; account None = API failing
+        if method == "GET" and path.rstrip("/") == "/v2/account":
+            if vf.account is None:
+                return handler._send(500, {"error": "temporarily unavailable", "status": 500})
+            return handler._send(200, {"account": vf.account})
+        return vf_dispatch(handler, method, path, query, body)
+    vf._dispatch = dispatch
     prod_id = vf.add_instance(tags=["rt-keep", "prod"], created=datetime.now(timezone.utc), label="prod-shop-01",
                               main_ip="203.0.113.9")
     fleet = FakeFleet(L.machine_state, {sha(L.RISKY_A.encode()): L.risky_a_facts(),

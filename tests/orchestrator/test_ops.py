@@ -295,8 +295,9 @@ def test_daily_budget(harness):
     assert judge_post(api, "198.51.100.2").status_code == 202
     r = judge_post(api, "198.51.100.3")
     assert r.status_code == 429 and "daily budget" in r.json()["detail"]["reason"]
-    assert api.get("/api/queue").json()["judge"] == {"mode": "on", "runs_today": 2, "daily_budget": 2,
-                                                      "per_ip_hour": 3}
+    judge = api.get("/api/queue").json()["judge"]
+    assert {k: judge[k] for k in ("mode", "runs_today", "daily_budget", "per_ip_hour")} == {
+        "mode": "on", "runs_today": 2, "daily_budget": 2, "per_ip_hour": 3}
     assert api.post("/api/rehearsals", json={"preset": "a"}, headers=OPERATOR).status_code == 202  # operator
 
 

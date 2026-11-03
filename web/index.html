@@ -11,6 +11,7 @@
   <h1 class="brand">Rehearsal <span>Twin</span></h1>
   <div class="vsep"></div>
   <label class="preset"><select id="preset" aria-label="Preset"></select></label>
+  <button class="run" id="run" type="button" disabled>Run</button>
   <ol class="steps" id="steps">
     <li data-step="rehearse"><i>1</i><span>Rehearse</span></li>
     <li data-step="review"><i>2</i><span>Review</span></li>
@@ -99,6 +100,7 @@
   <section class="panel instances">
     <h2>Vultr instances</h2>
     <ul id="instances"></ul>
+    <p class="queue" id="queue"></p>
   </section>
 
   <section class="panel ledger">

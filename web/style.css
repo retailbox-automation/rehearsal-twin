@@ -34,6 +34,8 @@ body {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='9'%3E%3Cpath d='M1 1l6 6 6-6' fill='none' stroke='%238d9bc9' stroke-width='1.8'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: right 14px center;
 }
+.run { position: absolute; left: 561px; top: 17px; width: 74px; height: 44px; border: 0; border-radius: 10px; background: var(--blue-btn); color: #fff; font: 600 16px Inter, -apple-system, sans-serif; cursor: pointer; box-shadow: 0 0 14px rgba(7,97,254,.45); }
+.run:disabled { opacity: .45; cursor: default; box-shadow: none; }
 .steps { position: absolute; left: 650px; top: 0; list-style: none; padding: 0; }
 .steps li { position: absolute; top: 22px; width: 200px; height: 50px; color: var(--muted); font-size: 16px; }
 .steps li:nth-child(1) { left: 0; } .steps li:nth-child(2) { left: 200px; }
@@ -111,6 +113,7 @@ h2 { font-size: 25px; font-weight: 700; line-height: 36px; }
 #instances .meta { color: var(--muted); font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; }
 #instances .chev { width: 10px; height: 10px; border-right: 2px solid #8d9bc9; border-top: 2px solid #8d9bc9; transform: rotate(45deg); margin-left: 6px; flex: none; }
 #instances li.removed b, #instances li.removed .meta { color: #6f7db0; text-decoration: line-through; }
+.queue { position: absolute; left: 20px; right: 20px; bottom: 14px; margin: 0; color: var(--muted); font-size: 13.5px; line-height: 19px; }
 
 /* ledger */
 .ledger { grid-column: 2 / 4; grid-row: 2; padding: 14px 16px 0; background: #0a0c2a; }

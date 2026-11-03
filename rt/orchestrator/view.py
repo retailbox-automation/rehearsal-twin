@@ -178,11 +178,11 @@ def _egress_rows(ledger: dict, claims: _Claims) -> list[dict]:
             continue
         claimed, reason = claims.take("dns", "lookup", q, n=10**9)
         rows.append(_row(f"dns {q}", claimed > 0, _plural(n, "lookup"), reason, "dns", n, claimed))
-    for k, n in sorted((ledger.get("egress_dropped") or {}).items()):
-        if int(n or 0) > 0:
-            claimed, reason = claims.take("network", "drop", k)
-            rows.append(_row(f"dropped {k}", claimed > 0, _plural(int(n), "packet"), reason, "network", int(n),
-                             claimed))
+    denied = int((ledger.get("egress_denied") or {}).get("packets") or 0)
+    if denied > 0:
+        claimed, reason = claims.take("network", "denied", "outbound packets")
+        rows.append(_row("denied by sandbox", claimed > 0, _plural(denied, "packet"), reason, "network", denied,
+                         claimed))
     return rows
 
 

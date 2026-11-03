@@ -245,6 +245,33 @@ def test_integrity_issues_and_dropped_packets():
     src["egress_bad_lines"] = 2
     run = run_record(iptables_start={"counters": {"udp_packets": 1, "other_packets": 1}})
     facts = diff.build_facts(s0, s1, run, src, CFG)
-    assert facts["egress_dropped"] == {"other_packets": 0, "udp_packets": 3}
+    assert facts["egress_denied"] == {"packets": 0}
+    assert facts["system_noise"]["udp_packets"] == 3 and facts["system_noise"]["other_packets"] == 0
     assert facts["integrity"]["ok"] is False
     assert len(facts["integrity"]["issues"]) == 4
+
+
+def test_noise_vs_script_attempt():
+    """One system packet dropped: in scope. One packet from the rehearsal unit dropped: out of scope."""
+    s0, s1 = cleanup_states()
+    for s in (s0, s1):
+        s.update(routes_sha256="rt1", egress_service={"active": "active", "main_pid": "10", "restarts": "0"})
+    src = cleanup_sources()
+    src["egress_records"] = []
+    src["canary_defs"] = []
+    scope = {"paths": ["/"], "tables": ["sessions"]}
+    start = {"counters": {"udp_packets": 0, "other_packets": 0, "sandbox_packets": 0}}
+
+    s1["iptables"] = {"rules_sha256": "r1", "counters": {"udp_packets": 0, "other_packets": 1, "sandbox_packets": 0}}
+    s1["routes_sha256"] = "rt2"
+    noise = finalize(diff.build_facts(s0, s1, run_record(iptables_start=start), src, CFG), scope)
+    assert noise["summary"]["verdict"] == "in_scope", noise["out_of_scope"]
+    assert noise["system_noise"]["other_packets"] == 1 and noise["system_noise"]["routes_changed"] is True
+    assert noise["integrity"]["ok"] is True
+
+    s1["iptables"] = {"rules_sha256": "r1", "counters": {"udp_packets": 0, "other_packets": 1, "sandbox_packets": 2}}
+    script = finalize(diff.build_facts(s0, s1, run_record(iptables_start=start), src, CFG), scope)
+    assert script["summary"]["verdict"] == "out_of_scope"
+    assert script["egress_denied"] == {"packets": 2}
+    assert [(e["kind"], e["op"], e["count"]) for e in script["out_of_scope"]] == [("network", "denied", 2)]
+    assert script["ledger_sha256"] != noise["ledger_sha256"]

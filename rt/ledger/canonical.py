@@ -25,6 +25,9 @@ VOLATILE_KEYS = frozenset({
     "peak_mem_mb",
     "duration_ms",
     "output",
+    "system_noise",
+    "drop_log",
+    "ip_accounting",
 })
 
 

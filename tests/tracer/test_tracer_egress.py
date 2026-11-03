@@ -86,27 +86,52 @@ def test_iptables_rules_shape():
     assert any("-d 10.77.0.3 -j RETURN" in c for c in nat)
     out = [c for c in flat if f"-A {egress.OUT_CHAIN}" in c]
     assert out[0].endswith("-o lo -j ACCEPT")
-    assert any("-d 10.77.0.3 -j ACCEPT" in c for c in out)
-    assert out[-1].endswith(f"-j {egress.DROP_CHAIN}")
-    assert out[-2].endswith(f"-p udp -j {egress.UDP_CHAIN}")
     assert out[1].endswith("-m addrtype --dst-type LOCAL -j ACCEPT")
     assert out[2].endswith("-m conntrack --ctstate ESTABLISHED -j ACCEPT")
-    assert out[3].endswith("-p udp --sport 68 --dport 67 -j ACCEPT")
+    # the script's own packets are split off before any other accept (DHCP, control)
+    assert out[3].endswith(f"-m cgroup --path rt.slice -j {egress.SANDBOX_CHAIN}")
+    assert out[4].endswith("-p udp --sport 68 --dport 67 -j ACCEPT")
+    assert out[5].endswith("-d 10.77.0.3 -j ACCEPT")
+    assert out[-2].endswith(f"-p udp -j {egress.UDP_CHAIN}")
+    assert out[-1].endswith(f"-j {egress.DROP_CHAIN}")
     assert not any("ACCEPT" in c for c in out
                    if "-o lo" not in c and "10.77.0.3" not in c and "--dst-type LOCAL" not in c
                    and "--ctstate ESTABLISHED" not in c and "--dport 67" not in c)
+    for chain in (egress.UDP_CHAIN, egress.DROP_CHAIN, egress.SANDBOX_CHAIN):
+        rules = [c for c in flat if f"-A {chain} " in c]
+        assert len(rules) == 2 and "-j LOG" in rules[0] and "--limit 30/min" in rules[0]
+        assert rules[1].endswith("-j DROP")
     assert not any("NEW" in c or "RELATED" in c for c in flat)
     assert flat[-1].endswith(f"-I OUTPUT 1 -j {egress.OUT_CHAIN}")
-    six = [" ".join(c) for c in egress.ip6tables_up_commands()]
-    nd = [c for c in six if "--icmpv6-type" in c]
-    assert len(nd) == 4 and all(c.endswith("-j ACCEPT") for c in nd)
-    assert six[-2].endswith(f"-A {egress.OUT6_CHAIN} -j DROP")
-    assert not any("ACCEPT" in c for c in six if "--icmpv6-type" not in c and "-o lo" not in c
-                   and "ESTABLISHED" not in c)
     assert any(c.endswith(f"-I OUTPUT 1 -j {egress.NAT_CHAIN}") for c in flat)
+
+    plain = [" ".join(c) for c in egress.iptables_up_commands(["10.77.0.3"], sandbox_slice=None)]
+    assert not any("cgroup" in c or egress.SANDBOX_CHAIN in c for c in plain)
+
+    six = [" ".join(c) for c in egress.ip6tables_up_commands()]
+    o6 = [c for c in six if f"-A {egress.OUT6_CHAIN} " in c]
+    assert o6[2].endswith(f"-m cgroup --path rt.slice -j {egress.SANDBOX6_CHAIN}")
+    nd = [c for c in o6 if "--icmpv6-type" in c]
+    assert len(nd) == 4 and all(c.endswith("-j ACCEPT") for c in nd)
+    assert o6[-1].endswith(f"-j {egress.DROP6_CHAIN}")
+    assert not any("ACCEPT" in c for c in o6 if "--icmpv6-type" not in c and "-o lo" not in c
+                   and "ESTABLISHED" not in c)
     with pytest.raises(ValueError):
         egress._allow_list("not-an-ip")
     assert egress._allow_list("10.77.0.3, 10.77.0.4") == ["10.77.0.3", "10.77.0.4"]
+
+
+def test_parse_drop_log():
+    text = ("Nov 03 18:01:02 twin kernel: rt-egress other: IN= OUT=enp1s0 SRC=10.77.0.6 DST=169.254.169.254 "
+            "LEN=40 TOS=0x00 PREC=0x00 TTL=64 ID=0 DF PROTO=TCP SPT=40000 DPT=80 WINDOW=0 RES=0x00 RST URGP=0\n"
+            "Nov 03 18:01:03 twin kernel: unrelated line\n"
+            "Nov 03 18:01:04 twin kernel: rt-egress sandbox: IN= OUT=enp1s0 SRC=10.77.0.6 DST=192.0.2.9 LEN=29 "
+            "PROTO=UDP SPT=5000 DPT=9 LEN=9 UID=0 GID=0\n")
+    recs = egress.parse_drop_log(text)
+    assert recs[0] == {"chain": "other", "out": "enp1s0", "src": "10.77.0.6", "dst": "169.254.169.254",
+                       "proto": "TCP", "spt": "40000", "dpt": "80"}
+    assert recs[1]["chain"] == "sandbox" and recs[1]["uid"] == "0" and recs[1]["proto"] == "UDP"
+    assert len(egress.parse_drop_log(text * 30, limit=5)) == 5
 
 
 def test_parse_chain_counters():

@@ -52,6 +52,10 @@ OUT_CHAIN = "RT_EGRESS_OUT"
 UDP_CHAIN = "RT_EGRESS_UDP"
 DROP_CHAIN = "RT_EGRESS_DROP"
 OUT6_CHAIN = "RT_EGRESS_OUT6"
+DROP6_CHAIN = "RT_EGRESS_DROP6"
+SANDBOX_CHAIN = "RT_EGRESS_SANDBOX"
+SANDBOX6_CHAIN = "RT_EGRESS_SANDBOX6"
+SANDBOX_SLICE = "rt.slice"
 
 HTTP_METHODS = (b"GET ", b"POST ", b"PUT ", b"DELETE ", b"PATCH ", b"HEAD ", b"OPTIONS ", b"CONNECT ",
                 b"TRACE ")
@@ -629,7 +633,17 @@ def start(rec: Recorder, addr: str = LISTEN_ADDR, tcp_port: int = TCP_PORT, dns_
 
 # ---------------------------------------------------------------- iptables
 
-def iptables_up_commands(allow, dns_port: int = DNS_PORT, tcp_port: int = TCP_PORT) -> list:
+def _drop_chain(tool: str, chain: str, label: str) -> list:
+    """A counting drop chain; the first packets per minute also go to the kernel log for diagnosis."""
+    t = [tool, "-w"]
+    return [t + ["-N", chain],
+            t + ["-A", chain, "-m", "limit", "--limit", "30/min", "--limit-burst", "30",
+                 "-j", "LOG", "--log-prefix", f"rt-egress {label}: ", "--log-uid"],
+            t + ["-A", chain, "-j", "DROP"]]
+
+
+def iptables_up_commands(allow, dns_port: int = DNS_PORT, tcp_port: int = TCP_PORT,
+                         sandbox_slice: str | None = SANDBOX_SLICE) -> list:
     nat = ["iptables", "-w", "-t", "nat"]
     flt = ["iptables", "-w"]
     c = [nat + ["-N", NAT_CHAIN],
@@ -640,17 +654,21 @@ def iptables_up_commands(allow, dns_port: int = DNS_PORT, tcp_port: int = TCP_PO
         c.append(nat + ["-A", NAT_CHAIN, "-d", a, "-j", "RETURN"])
     c.append(nat + ["-A", NAT_CHAIN, "-p", "tcp", "-j", "REDIRECT", "--to-ports", str(tcp_port)])
     c.append(nat + ["-I", "OUTPUT", "1", "-j", NAT_CHAIN])
-    c += [flt + ["-N", UDP_CHAIN], flt + ["-A", UDP_CHAIN, "-j", "DROP"],
-          flt + ["-N", DROP_CHAIN], flt + ["-A", DROP_CHAIN, "-j", "DROP"],
-          flt + ["-N", OUT_CHAIN], flt + ["-A", OUT_CHAIN, "-o", "lo", "-j", "ACCEPT"],
+    c += _drop_chain("iptables", UDP_CHAIN, "udp") + _drop_chain("iptables", DROP_CHAIN, "other")
+    if sandbox_slice:
+        c += _drop_chain("iptables", SANDBOX_CHAIN, "sandbox")
+    c += [flt + ["-N", OUT_CHAIN], flt + ["-A", OUT_CHAIN, "-o", "lo", "-j", "ACCEPT"],
           # Redirected packets keep the original output device in filter OUTPUT (the hook's
           # device is fixed before nat rewrites the destination), so accept by local destination.
           flt + ["-A", OUT_CHAIN, "-m", "addrtype", "--dst-type", "LOCAL", "-j", "ACCEPT"],
           # Replies on connections opened from outside (SSH from control) are not egress; a
           # connection opened from here never gets that far, its first packet is redirected or dropped.
-          flt + ["-A", OUT_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"],
-          # DHCP lease renewals keep the VPC address; the sandboxed script cannot send these (IP filter).
-          flt + ["-A", OUT_CHAIN, "-p", "udp", "--sport", "68", "--dport", "67", "-j", "ACCEPT"]]
+          flt + ["-A", OUT_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"]]
+    if sandbox_slice:
+        # Everything else from a rehearsal unit is the script's own attempt: counted on its own.
+        c.append(flt + ["-A", OUT_CHAIN, "-m", "cgroup", "--path", sandbox_slice, "-j", SANDBOX_CHAIN])
+    # DHCP lease renewals keep the VPC address.
+    c.append(flt + ["-A", OUT_CHAIN, "-p", "udp", "--sport", "68", "--dport", "67", "-j", "ACCEPT"])
     for a in allow:
         c.append(flt + ["-A", OUT_CHAIN, "-d", a, "-j", "ACCEPT"])
     c += [flt + ["-A", OUT_CHAIN, "-p", "udp", "-j", UDP_CHAIN],
@@ -659,25 +677,35 @@ def iptables_up_commands(allow, dns_port: int = DNS_PORT, tcp_port: int = TCP_PO
     return c
 
 
-def ip6tables_up_commands() -> list:
+def ip6tables_up_commands(sandbox_slice: str | None = SANDBOX_SLICE) -> list:
     f6 = ["ip6tables", "-w"]
-    return [f6 + ["-N", OUT6_CHAIN], f6 + ["-A", OUT6_CHAIN, "-o", "lo", "-j", "ACCEPT"],
-            f6 + ["-A", OUT6_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"]] + [
-            # Neighbour discovery and multicast listener reports from the kernel itself (router and
-            # neighbour solicitation, advertisement, MLDv2): link-local housekeeping, not egress.
-            f6 + ["-A", OUT6_CHAIN, "-p", "ipv6-icmp", "--icmpv6-type", t, "-j", "ACCEPT"]
-            for t in ("133", "135", "136", "143")] + [
-            f6 + ["-A", OUT6_CHAIN, "-j", "DROP"], f6 + ["-I", "OUTPUT", "1", "-j", OUT6_CHAIN]]
+    c = [f6 + ["-N", OUT6_CHAIN]] + _drop_chain("ip6tables", DROP6_CHAIN, "ipv6")
+    if sandbox_slice:
+        c += _drop_chain("ip6tables", SANDBOX6_CHAIN, "sandbox6")
+    c += [f6 + ["-A", OUT6_CHAIN, "-o", "lo", "-j", "ACCEPT"],
+          f6 + ["-A", OUT6_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"]]
+    if sandbox_slice:
+        c.append(f6 + ["-A", OUT6_CHAIN, "-m", "cgroup", "--path", sandbox_slice, "-j", SANDBOX6_CHAIN])
+    # Neighbour discovery and multicast listener reports from the kernel itself (router and
+    # neighbour solicitation, advertisement, MLDv2): link-local housekeeping, not egress.
+    c += [f6 + ["-A", OUT6_CHAIN, "-p", "ipv6-icmp", "--icmpv6-type", t, "-j", "ACCEPT"]
+          for t in ("133", "135", "136", "143")]
+    c += [f6 + ["-A", OUT6_CHAIN, "-j", DROP6_CHAIN], f6 + ["-I", "OUTPUT", "1", "-j", OUT6_CHAIN]]
+    return c
 
 
 def iptables_down_commands() -> list:
     nat = ["iptables", "-w", "-t", "nat"]
     flt = ["iptables", "-w"]
     f6 = ["ip6tables", "-w"]
-    return [nat + ["-D", "OUTPUT", "-j", NAT_CHAIN], nat + ["-F", NAT_CHAIN], nat + ["-X", NAT_CHAIN],
-            flt + ["-D", "OUTPUT", "-j", OUT_CHAIN], flt + ["-F", OUT_CHAIN], flt + ["-X", OUT_CHAIN],
-            flt + ["-F", UDP_CHAIN], flt + ["-X", UDP_CHAIN], flt + ["-F", DROP_CHAIN], flt + ["-X", DROP_CHAIN],
-            f6 + ["-D", "OUTPUT", "-j", OUT6_CHAIN], f6 + ["-F", OUT6_CHAIN], f6 + ["-X", OUT6_CHAIN]]
+    c = [nat + ["-D", "OUTPUT", "-j", NAT_CHAIN], nat + ["-F", NAT_CHAIN], nat + ["-X", NAT_CHAIN],
+         flt + ["-D", "OUTPUT", "-j", OUT_CHAIN], flt + ["-F", OUT_CHAIN], flt + ["-X", OUT_CHAIN],
+         f6 + ["-D", "OUTPUT", "-j", OUT6_CHAIN], f6 + ["-F", OUT6_CHAIN], f6 + ["-X", OUT6_CHAIN]]
+    for chain in (UDP_CHAIN, DROP_CHAIN, SANDBOX_CHAIN):
+        c += [flt + ["-F", chain], flt + ["-X", chain]]
+    for chain in (DROP6_CHAIN, SANDBOX6_CHAIN):
+        c += [f6 + ["-F", chain], f6 + ["-X", chain]]
+    return c
 
 
 def _run(argv) -> subprocess.CompletedProcess:
@@ -690,21 +718,50 @@ def iptables_down():
             _run(argv)
 
 
-def iptables_up(allow) -> list:
-    """Install the rules (after removing old ones). Returns warnings for ip6tables only."""
-    iptables_down()
-    for argv in iptables_up_commands(allow):
+def _ensure_slice(name: str) -> bool:
+    """The cgroup match needs the slice cgroup to exist when the rule is added."""
+    try:
+        p = _run(["systemctl", "start", name])
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return p.returncode == 0 and os.path.isdir(f"/sys/fs/cgroup/{name}")
+
+
+def _apply(cmds) -> str | None:
+    for argv in cmds:
         p = _run(argv)
         if p.returncode != 0:
-            raise RuntimeError(f"{' '.join(argv)}: {p.stderr.strip()}")
+            return f"{' '.join(argv)}: {p.stderr.strip()}"
+    return None
+
+
+def iptables_up(allow, sandbox_slice: str = SANDBOX_SLICE) -> list:
+    """Install the rules (after removing old ones). Returns warnings; fails only on the core rules.
+
+    Without the cgroup match every dropped packet is counted as system noise (warning);
+    containment itself does not depend on it.
+    """
     warnings = []
-    for i, argv in enumerate(ip6tables_up_commands()):
-        p = _run(argv)
-        if p.returncode != 0:
-            if i == 0:  # no ip6tables here at all: nothing half-built, warn only
-                warnings.append(f"{' '.join(argv)}: {p.stderr.strip()}")
-                break
-            raise RuntimeError(f"{' '.join(argv)}: {p.stderr.strip()}")
+    slice_ok = _ensure_slice(sandbox_slice)
+    if not slice_ok:
+        warnings.append(f"slice {sandbox_slice} not available: drops are not attributed to the script")
+    iptables_down()
+    err = _apply(iptables_up_commands(allow, sandbox_slice=sandbox_slice if slice_ok else None))
+    if err and slice_ok:
+        warnings.append(f"cgroup match unavailable ({err}): drops are not attributed to the script")
+        slice_ok = False
+        iptables_down()
+        err = _apply(iptables_up_commands(allow, sandbox_slice=None))
+    if err:
+        raise RuntimeError(err)
+    six = ip6tables_up_commands(sandbox_slice if slice_ok else None)
+    first = _run(six[0])
+    if first.returncode != 0:  # no ip6tables here at all: nothing half-built, warn only
+        warnings.append(f"{' '.join(six[0])}: {first.stderr.strip()}")
+        return warnings
+    err = _apply(six[1:])
+    if err:
+        raise RuntimeError(err)
     return warnings
 
 
@@ -717,16 +774,42 @@ def parse_chain_counters(text: str) -> dict:
     return {"packets": 0, "bytes": 0}
 
 
+COUNTER_CHAINS = (("udp_packets", "iptables", UDP_CHAIN), ("other_packets", "iptables", DROP_CHAIN),
+                  ("ipv6_packets", "ip6tables", DROP6_CHAIN), ("sandbox_packets", "iptables", SANDBOX_CHAIN),
+                  ("sandbox6_packets", "ip6tables", SANDBOX6_CHAIN))
+
+
 def counters() -> dict:
+    """Dropped packets per chain: sandbox_* are the script's own, the rest is system noise."""
     out = {}
-    for key, tool, chain in (("udp_packets", "iptables", UDP_CHAIN), ("other_packets", "iptables", DROP_CHAIN),
-                             ("ipv6_packets", "ip6tables", OUT6_CHAIN)):
+    for key, tool, chain in COUNTER_CHAINS:
         try:
             p = _run([tool, "-w", "-L", chain, "-v", "-x", "-n"])
         except (OSError, subprocess.SubprocessError):
             continue
         if p.returncode == 0:
             out[key] = parse_chain_counters(p.stdout)["packets"]
+    return out
+
+
+LOG_LINE = re.compile(r"rt-egress (?P<chain>[a-z0-9]+): .*")
+
+
+def parse_drop_log(text: str, limit: int = 20) -> list:
+    """Kernel log lines of logged drops -> [{chain, proto, dst, dpt, uid, ...}] (diagnosis only)."""
+    out = []
+    for line in text.splitlines():
+        m = LOG_LINE.search(line)
+        if not m:
+            continue
+        rec = {"chain": m.group("chain")}
+        for key in ("OUT", "SRC", "DST", "PROTO", "SPT", "DPT", "TYPE", "UID", "GID"):
+            km = re.search(rf"\b{key}=(\S*)", line)
+            if km:
+                rec[key.lower()] = km.group(1)
+        out.append(rec)
+        if len(out) >= limit:
+            break
     return out
 
 

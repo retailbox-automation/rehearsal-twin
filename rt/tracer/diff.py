@@ -130,7 +130,10 @@ def integrity(state0: dict, state1: dict, run: dict, sql=(), egress_bad_lines: i
     same("tracer_files", state0.get("self_digest"), state1.get("self_digest"), "tracer files under /opt/rt changed")
     same("firewall_rules", (state0.get("iptables") or {}).get("rules_sha256"),
          (state1.get("iptables") or {}).get("rules_sha256"), "egress firewall rules changed")
-    same("routes", state0.get("routes_sha256"), state1.get("routes_sha256"), "routing table changed")
+    # Routes are informational: the sandbox has no netlink and no CAP_NET_ADMIN, so a change here
+    # comes from the system (DHCP, router advertisements), and firewall_rules guards the egress path.
+    r0, r1 = state0.get("routes_sha256"), state1.get("routes_sha256")
+    checks["routes"] = "not available" if r0 is None and r1 is None else ("unchanged" if r0 == r1 else "changed")
 
     e0, e1 = state0.get("egress_service") or {}, state1.get("egress_service") or {}
     if not state0.get("egress_active"):
@@ -190,6 +193,7 @@ def build_facts(state0: dict, state1: dict, run: dict, sources: dict, cfg: dict)
                                  kept, hits)
     start_counters = (run.get("iptables_start") or state0.get("iptables") or {}).get("counters") or {}
     end_counters = (state1.get("iptables") or {}).get("counters") or {}
+    drops = dropped_delta(start_counters, end_counters)
     limits = run.get("limits") or {}
     checked = integrity(state0, state1, run, sources.get("sql") or [], int(sources.get("egress_bad_lines") or 0))
     return {
@@ -200,7 +204,18 @@ def build_facts(state0: dict, state1: dict, run: dict, sources: dict, cfg: dict)
         "sql": sql,
         "egress": egress,
         "dns": dns,
-        "egress_dropped": dropped_delta(start_counters, end_counters),
+        # Packets from the rehearsal unit that the firewall dropped: the script's own attempts.
+        "egress_denied": {"packets": drops.get("sandbox_packets", 0) + drops.get("sandbox6_packets", 0)},
+        # Drops from other processes and route changes during the window: shown, never in scope,
+        # never in the hash (the key is volatile).
+        "system_noise": {
+            "udp_packets": drops.get("udp_packets", 0),
+            "other_packets": drops.get("other_packets", 0),
+            "ipv6_packets": drops.get("ipv6_packets", 0),
+            "routes_changed": checked["checks"].get("routes") == "changed",
+        },
+        "drop_log": sources.get("drop_log") or [],
+        "ip_accounting": run.get("ip_accounting") or {},
         "canaries": canaries,
         "exit": run.get("exit"),
         "limits": {k: limits.get(k) for k in LIMIT_KEYS if k in limits},

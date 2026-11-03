@@ -148,6 +148,7 @@ def capture(cfg: dict, scope_raw=None, settle_max: float = 0.0, rearm: bool = Fa
     return {
         "kind": "rt-state",
         "taken_at": taken,
+        "taken_epoch": time.time(),
         "roots": roots,
         "offsets": offsets,
         "files": fsstate.scan(roots, cfg.get("exclude") or (), cfg.get("hash_limit", 4 << 20)),
@@ -204,7 +205,20 @@ def read_sources(cfg: dict, state0: dict, state1: dict, run: dict) -> dict:
     records, bad = logs.parse_jsonl(logs.read_window(cfg.get("egress_log", ""), start.get("egress_log", 0),
                                                      end.get("egress_log")))
     return {"sql": sql, "audit": audit, "egress_records": records, "egress_bad_lines": bad,
-            "canary_defs": defs}
+            "canary_defs": defs, "drop_log": drop_log(run.get("started_at"), state1.get("taken_epoch"))}
+
+
+def drop_log(since: float | None, until: float | None) -> list:
+    """Logged firewall drops in the run window from the kernel log (diagnosis only, may be empty)."""
+    if not since or not until:
+        return []
+    try:
+        p = subprocess.run(["journalctl", "-k", "--no-pager", "-o", "short-unix",
+                            "--since", f"@{since - 1:.0f}", "--until", f"@{until + 1:.0f}"],
+                           capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return egress.parse_drop_log(p.stdout) if p.returncode == 0 else []
 
 
 def cmd_diff(args, cfg) -> dict:

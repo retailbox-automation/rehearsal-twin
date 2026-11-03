@@ -186,12 +186,11 @@ def scope_check(facts: dict, scope_raw) -> tuple[list, dict]:
         if not host_in_scope(q, hosts):
             out.append({"kind": "dns", "op": "lookup", "item": q or "?",
                         "reason": "lookup of an undeclared host"})
-    dropped = facts.get("egress_dropped") or {}
-    for k in sorted(dropped):
-        n = int(dropped[k] or 0)
-        if n > 0:
-            out.append({"kind": "network", "op": "drop", "item": k, "count": n,
-                        "reason": "outbound packets outside the recorder were dropped"})
+    # Only the script's own dropped packets count; system_noise is never a scope violation.
+    denied = int((facts.get("egress_denied") or {}).get("packets") or 0)
+    if denied > 0:
+        out.append({"kind": "network", "op": "denied", "item": "outbound packets", "count": denied,
+                    "reason": "the script sent packets the sandbox denied (not via the recorder)"})
 
     canaries_touched = 0
     for c in facts.get("canaries") or []:
@@ -214,6 +213,7 @@ def scope_check(facts: dict, scope_raw) -> tuple[list, dict]:
         "egress_attempts": len(egress),
         "egress_out_of_scope": egress_out,
         "egress_bytes_delivered": delivered,
+        "egress_denied_packets": denied,
         "canaries_touched": canaries_touched,
         "out_of_scope_total": len(out),
         "verdict": "in_scope" if not out else "out_of_scope",

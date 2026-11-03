@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 FIXTURE_DIR = WEB_DIR / "fixtures"
+PRESET_DIR = WEB_DIR.parent / "presets"
 
 
 def load_rehearsal(rid: str) -> dict:
@@ -76,6 +77,11 @@ def _fixture_routes(app: FastAPI) -> None:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.get("/api/presets")
+    def presets() -> dict:
+        items = [json.loads(p.read_text()) for p in sorted(PRESET_DIR.glob("*/preset.json"))]
+        return {"presets": [{k: i.get(k) for k in ("id", "name", "title", "goal")} for i in items]}
 
     @app.get("/api/instances")
     def instances() -> dict:

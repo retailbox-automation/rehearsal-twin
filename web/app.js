@@ -7,8 +7,17 @@
   const $ = (id) => document.getElementById(id);
   const STEPS = ["rehearse", "review", "apply", "compare"];
 
-  const state = { r: null, step: null, rows: 0, summary: false, prod: { files: 0, rows: 0 }, gone: new Set(), added: new Set(), compare: false };
+  const state = { r: null, step: null, rows: 0, summary: false, prod: { files: 0, rows: 0 }, gone: new Set(), added: new Set(), compare: false, presetList: [] };
   const t0 = Date.now();
+
+  // The screen is laid out for 1672 px; scale it to the window (1280-1920 and beyond), wrap below 1200.
+  const DESIGN_W = 1672, NARROW = 1200;
+  function fit() {
+    const w = document.documentElement.clientWidth;
+    document.body.style.zoom = w <= NARROW ? "" : String(Math.min(w / DESIGN_W, 2));
+  }
+  fit();
+  window.addEventListener("resize", fit);
 
   const el = (tag, cls, text) => {
     const n = document.createElement(tag);
@@ -36,7 +45,15 @@
     $("scope-hosts").textContent = r.scope.hosts.join(", ") || "none";
     $("twin-sub").textContent = r.twin.subtitle;
     const sel = $("preset");
-    sel.replaceChildren(...r.presets.map((p) => { const o = el("option", "", p); o.selected = p === r.preset; return o; }));
+    const byName = new Map(state.presetList.map((p) => [p.name, p]));
+    sel.replaceChildren(...r.presets.map((p) => {
+      const info = byName.get(p);
+      const o = el("option", "", r.empty && info ? `${info.id} \u00b7 ${p}` : p);
+      o.value = p;
+      if (info && info.title) o.title = info.title;
+      o.selected = p === r.preset;
+      return o;
+    }));
   }
 
   function renderSteps() {
@@ -50,7 +67,9 @@
   function renderTwin() {
     const r = state.r, s = r.summary;
     const twin = $("twin");
-    twin.dataset.state = state.summary ? "done" : "idle";
+    const oos = r.ledger_view.filter((v) => v.verdict !== "in_scope");
+    const risky = state.summary && (s.outside_count > 0 || s.out_of_scope_total > 0 || oos.length > 0);
+    twin.dataset.state = !state.summary ? "idle" : risky ? "risky" : "safe";
     if (!state.summary) {
       $("verdict-text").textContent = state.step ? "rehearsing on the twin..." : "waiting for rehearsal";
       $("outside-text").textContent = "";
@@ -59,7 +78,13 @@
     }
     $("verdict-text").textContent = s.headline || `deleted ${s.deleted_files} files`;
     const o = $("outside-text");
-    o.replaceChildren(el("em", "", String(s.outside_count)), document.createTextNode(` outside declared scope: ${s.outside_paths.join(", ")}`));
+    if (!risky) {
+      o.replaceChildren(el("em", "", "0"), document.createTextNode(" outside declared scope"));
+    } else {
+      const n = s.outside_count || s.out_of_scope_total || oos.length;
+      const where = (s.outside_paths && s.outside_paths.length ? s.outside_paths : oos.map((v) => v.target)).join(", ");
+      o.replaceChildren(el("em", "", String(n)), document.createTextNode(` outside declared scope: ${where}`));
+    }
     const e = s.egress_line;
     const b = $("blocked-text");
     b.replaceChildren(document.createTextNode(`${e.method} ${e.target} — `), el("em", "", e.note));
@@ -213,6 +238,10 @@
     let res = await fetch(`/api/rehearsals/${encodeURIComponent(rid)}`);
     if (!res.ok && !asked) res = await fetch("/api/rehearsals/a");  // fixture mode
     state.r = await res.json();
+    try {  // preset names for the selector; empty screens list a/b/c with their names
+      const pr = await fetch("/api/presets");
+      if (pr.ok) state.presetList = (await pr.json()).presets || [];
+    } catch (e) { /* the selector falls back to the names in the record */ }
     if (state.r.empty) state.r = emptyRecord(state.r);
     $("run").disabled = !live();
     if (live()) { pollQueue(); setInterval(pollQueue, 3000); }

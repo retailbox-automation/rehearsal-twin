@@ -158,7 +158,7 @@ class FakeVultr:
             inst = {
                 "id": iid, "label": body.get("label", ""), "hostname": body.get("hostname", ""),
                 "tags": body.get("tags", []), "date_created": iso(datetime.now(timezone.utc)),
-                "main_ip": "203.0.113.7" if self.public_ip_on_create else "0.0.0.0",
+                "main_ip": "45.77.102.7" if self.public_ip_on_create else "0.0.0.0",  # globally routable (TEST-NET is not public)
                 "v6_main_ip": "", "internal_ip": "", "status": "pending", "power_status": "stopped",
                 "server_status": "none", "plan": body.get("plan"), "region": body.get("region"),
                 "vpc_only": not self.public_ip_on_create,

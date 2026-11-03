@@ -11,6 +11,7 @@ optional). Vultr credentials are read by rt.twin.vultr.
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import secrets
@@ -48,10 +49,19 @@ def twin_tags(rid: str) -> list[str]:
     return ["rehearsal", TWIN_TAG, f"rt:{rid}"]
 
 
+def _is_global(addr: str) -> bool:
+    try:
+        return ipaddress.ip_address(addr).is_global
+    except ValueError:
+        return False
+
+
 def has_public_ip(inst: dict) -> bool:
+    # A VPC-only instance reports its VPC address as main_ip (live 03.11: main_ip == internal_ip == 10.77.0.6),
+    # so "non-empty" is not "public"; only a globally routable address counts.
     v4 = inst.get("main_ip") or ""
     v6 = inst.get("v6_main_ip") or ""
-    return v4 not in ("", "0.0.0.0") or v6 not in ("", "::")
+    return _is_global(v4) or _is_global(v6)
 
 
 def is_ready(inst: dict) -> bool:

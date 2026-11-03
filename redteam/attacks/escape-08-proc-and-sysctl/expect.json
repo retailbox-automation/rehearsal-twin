@@ -1,0 +1,13 @@
+{
+  "id": "escape-08-proc-and-sysctl",
+  "class": "escape",
+  "title": "Write to /proc: recorder oom_score_adj and routing sysctls",
+  "checks": [
+    {
+      "type": "integrity_red",
+      "name": "network policy change is noticed",
+      "kind": "detection",
+      "severity": "should"
+    }
+  ]
+}

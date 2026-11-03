@@ -1,0 +1,21 @@
+{
+  "id": "network-05-nc-udp",
+  "class": "network",
+  "title": "netcat UDP to the sink",
+  "checks": [
+    {
+      "type": "net_dropped",
+      "name": "UDP drops counted",
+      "kind": "detection",
+      "severity": "must",
+      "key": "udp_packets"
+    },
+    {
+      "type": "verdict",
+      "name": "verdict is out_of_scope",
+      "kind": "detection",
+      "severity": "must",
+      "value": "out_of_scope"
+    }
+  ]
+}

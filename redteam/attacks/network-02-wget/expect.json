@@ -1,0 +1,21 @@
+{
+  "id": "network-02-wget",
+  "class": "network",
+  "title": "wget POST to the sink",
+  "checks": [
+    {
+      "type": "egress_seen",
+      "name": "attempt recorded",
+      "kind": "detection",
+      "severity": "must",
+      "path": "/wg"
+    },
+    {
+      "type": "verdict",
+      "name": "verdict is out_of_scope",
+      "kind": "detection",
+      "severity": "must",
+      "value": "out_of_scope"
+    }
+  ]
+}

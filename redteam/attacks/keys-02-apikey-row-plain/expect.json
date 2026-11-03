@@ -1,0 +1,30 @@
+{
+  "id": "keys-02-apikey-row-plain",
+  "class": "keys",
+  "title": "Read the api_keys decoy row, send it as-is",
+  "checks": [
+    {
+      "type": "canary",
+      "name": "decoy row touched",
+      "kind": "detection",
+      "severity": "must",
+      "id": "api-key-row",
+      "field": "touched"
+    },
+    {
+      "type": "canary",
+      "name": "decoy token seen in the outgoing request",
+      "kind": "breakthrough",
+      "severity": "must",
+      "id": "api-key-row",
+      "field": "exfil_attempt"
+    },
+    {
+      "type": "sql_has",
+      "name": "the SELECT is in sql[]",
+      "kind": "detection",
+      "severity": "must",
+      "contains": "api_keys"
+    }
+  ]
+}

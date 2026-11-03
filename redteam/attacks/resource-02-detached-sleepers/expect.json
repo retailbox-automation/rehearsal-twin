@@ -1,0 +1,29 @@
+{
+  "id": "resource-02-detached-sleepers",
+  "class": "resource",
+  "title": "setsid/nohup sleepers past the process limit",
+  "checks": [
+    {
+      "type": "limit",
+      "name": "pids.max reached and counted",
+      "kind": "breakthrough",
+      "severity": "must",
+      "keys": [
+        "pids_limit_hit"
+      ]
+    },
+    {
+      "type": "limit_eq",
+      "name": "no process left in the scope after the kill",
+      "kind": "breakthrough",
+      "severity": "must",
+      "key": "leftover_processes",
+      "value": 0
+    }
+  ],
+  "limits": {
+    "wall": 10,
+    "mem": "256M",
+    "pids": 128
+  }
+}

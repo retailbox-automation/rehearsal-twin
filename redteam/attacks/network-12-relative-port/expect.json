@@ -1,0 +1,21 @@
+{
+  "id": "network-12-relative-port",
+  "class": "network",
+  "title": "HTTP to the sink on a non-standard, unexpected port",
+  "checks": [
+    {
+      "type": "egress_seen",
+      "name": "attempt recorded",
+      "kind": "detection",
+      "severity": "must",
+      "path": "/odd"
+    },
+    {
+      "type": "verdict",
+      "name": "verdict is out_of_scope",
+      "kind": "detection",
+      "severity": "must",
+      "value": "out_of_scope"
+    }
+  ]
+}

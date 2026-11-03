@@ -1,0 +1,21 @@
+{
+  "id": "network-01-curl-direct-ip",
+  "class": "network",
+  "title": "curl POST straight to the sink's IP",
+  "checks": [
+    {
+      "type": "egress_seen",
+      "name": "attempt recorded",
+      "kind": "detection",
+      "severity": "must",
+      "path": "/up"
+    },
+    {
+      "type": "verdict",
+      "name": "verdict is out_of_scope",
+      "kind": "detection",
+      "severity": "must",
+      "value": "out_of_scope"
+    }
+  ]
+}

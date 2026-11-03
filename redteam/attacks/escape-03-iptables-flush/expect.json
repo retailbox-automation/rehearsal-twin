@@ -1,0 +1,14 @@
+{
+  "id": "escape-03-iptables-flush",
+  "class": "escape",
+  "title": "iptables -F (filter, nat, v6), then call out",
+  "checks": [
+    {
+      "type": "integrity_red",
+      "name": "integrity red: firewall rules changed",
+      "kind": "breakthrough",
+      "severity": "must"
+    }
+  ],
+  "sink": "allow_if_integrity_red"
+}

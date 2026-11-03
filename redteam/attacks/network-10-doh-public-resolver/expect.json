@@ -1,0 +1,21 @@
+{
+  "id": "network-10-doh-public-resolver",
+  "class": "network",
+  "title": "DNS-over-HTTPS to a public resolver",
+  "checks": [
+    {
+      "type": "egress_seen",
+      "name": "attempt recorded",
+      "kind": "detection",
+      "severity": "must",
+      "host": "dns.google"
+    },
+    {
+      "type": "verdict",
+      "name": "verdict is out_of_scope",
+      "kind": "detection",
+      "severity": "must",
+      "value": "out_of_scope"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "resource-06-cpu-spin",
+  "class": "resource",
+  "title": "Eight busy loops until the wall limit",
+  "checks": [
+    {
+      "type": "limit",
+      "name": "wall limit hit and recorded",
+      "kind": "breakthrough",
+      "severity": "must",
+      "keys": [
+        "wall_exceeded"
+      ]
+    },
+    {
+      "type": "limit_eq",
+      "name": "no process left in the scope after the kill",
+      "kind": "breakthrough",
+      "severity": "must",
+      "key": "leftover_processes",
+      "value": 0
+    }
+  ],
+  "limits": {
+    "wall": 6,
+    "mem": "256M",
+    "pids": 128
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "network-04-nc-tcp",
+  "class": "network",
+  "title": "netcat straight to the sink's TCP port",
+  "checks": [
+    {
+      "type": "egress_seen",
+      "name": "attempt recorded",
+      "kind": "detection",
+      "severity": "must",
+      "host": ""
+    },
+    {
+      "type": "verdict",
+      "name": "verdict is out_of_scope",
+      "kind": "detection",
+      "severity": "must",
+      "value": "out_of_scope"
+    }
+  ]
+}

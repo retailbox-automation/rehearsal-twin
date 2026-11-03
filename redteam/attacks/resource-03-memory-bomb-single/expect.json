@@ -1,0 +1,27 @@
+{
+  "id": "resource-03-memory-bomb-single",
+  "class": "resource",
+  "title": "One process allocates 2 GiB under a 256 MiB limit",
+  "checks": [
+    {
+      "type": "limit",
+      "name": "OOM kill recorded",
+      "kind": "breakthrough",
+      "severity": "must",
+      "keys": [
+        "oom"
+      ]
+    },
+    {
+      "type": "exit_nonzero",
+      "name": "script did not finish normally",
+      "kind": "breakthrough",
+      "severity": "must"
+    }
+  ],
+  "limits": {
+    "wall": 12,
+    "mem": "256M",
+    "pids": 128
+  }
+}

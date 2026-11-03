@@ -84,7 +84,10 @@ def new_unit_name(prefix: str = "rt-run") -> str:
     return f"{prefix}-{secrets.token_hex(4)}"
 
 
-def sandbox_properties(mem_bytes: int, pids: int, wall: float, allow=()) -> list:
+RESOLV_CONF = "nameserver 127.0.0.1\n"
+
+
+def sandbox_properties(mem_bytes: int, pids: int, wall: float, allow=(), resolv_path: str | None = None) -> list:
     props = [
         f"MemoryMax={mem_bytes}", "MemorySwapMax=0", f"TasksMax={pids}",
         f"RuntimeMaxSec={max(1, math.ceil(wall))}", f"TimeoutStopSec={STOP_TIMEOUT_S}", "OOMPolicy=continue",
@@ -103,17 +106,21 @@ def sandbox_properties(mem_bytes: int, pids: int, wall: float, allow=()) -> list
         "ReadOnlyPaths=" + " ".join("-" + p for p in READ_ONLY_PATHS),
         "InaccessiblePaths=" + " ".join("-" + p for p in INACCESSIBLE_PATHS),
     ]
+    if resolv_path:
+        # The machine's resolver may be a VPC address whose replies the IP filter rejects;
+        # inside the sandbox names go to the recorder's DNS stub through loopback.
+        props.append(f"BindReadOnlyPaths={resolv_path}:/etc/resolv.conf")
     return props
 
 
 def build_command(unit: str, script: str, mem_bytes: int, pids: int, wall: float, stats_path: str,
                   helper_path: str, cwd: str, allow=(), slice_name: str = "rt.slice",
-                  shell: str = "/bin/bash") -> list:
+                  shell: str = "/bin/bash", resolv_path: str | None = None) -> list:
     argv = ["systemd-run", "--wait", "--pipe", "--collect", "--quiet",
             f"--unit={unit}", f"--slice={slice_name}", f"--working-directory={cwd}"]
     for e in SCRIPT_ENV:
         argv += ["-E", e]
-    for p in sandbox_properties(mem_bytes, pids, wall, allow):
+    for p in sandbox_properties(mem_bytes, pids, wall, allow, resolv_path):
         argv += ["-p", p]
     argv += ["-p", f"ExecStopPost=+/bin/bash {helper_path} {stats_path}"]
     return argv + ["--", shell, script]
@@ -249,7 +256,12 @@ def run_script(script: str, wall: float, mem: str, pids: int, cwd: str | None = 
     with open(helper_path, "w", encoding="utf-8") as f:
         f.write(STOPPOST)
     os.chmod(helper_path, 0o700)
-    argv = build_command(unit, script, mem_bytes, pids, wall, stats_path, helper_path, cwd, allow, slice_name)
+    resolv_path = os.path.join(stats_dir, "resolv.conf")
+    with open(resolv_path, "w", encoding="utf-8") as f:
+        f.write(RESOLV_CONF)
+    os.chmod(resolv_path, 0o644)
+    argv = build_command(unit, script, mem_bytes, pids, wall, stats_path, helper_path, cwd, allow, slice_name,
+                         resolv_path=resolv_path)
     env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
     started = time.time()
     t0 = time.monotonic()

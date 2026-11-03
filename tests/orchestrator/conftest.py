@@ -21,6 +21,7 @@ from tests.orchestrator.fakes import FakeFleet, ModelRouter, reply_safe_unless, 
 from tests.twin.fake_vultr import FakeVultr
 
 FAKE_KEY = "unit-test-placeholder"
+API_TOKEN = "operator-test-token-not-a-secret"
 REPO = Path(__file__).resolve().parents[2]
 SNAPSHOT = "snap-golden-1"
 VPC = "vpc-1"
@@ -91,14 +92,16 @@ def harness(tmp_path, monkeypatch):
     key.write_text("placeholder")
     settings = Settings(data_dir=tmp_path / "data", presets_dir=REPO / "presets", snapshot_id=SNAPSHOT,
                         vpc_id=VPC, prod_instance_id=prod_id, ssh_key_file=str(key), poll_s=0,
-                        ready_timeout_s=30, missing=[])
+                        ready_timeout_s=30, twin_slot_wait_s=0, restore_poll_s=0, restore_settle_s=0,
+                        api_token=API_TOKEN, missing=[])
     vultr = Vultr(api_key=FAKE_KEY, base_url=vf.url, sleep=lambda s: None, timing=lambda line: None)
     client = InferenceClient(api_key=FAKE_KEY, base_url=inf.url, sleep=lambda s: None)
     signer = Signer(Ed25519PrivateKey.generate())
     orch = Orchestrator(
         settings, vultr=vultr,
         ssh_factory=lambda: SSH(key_file=str(key), jump=None, runner=fleet, state_dir=str(tmp_path / "ssh")),
-        planner=Planner(client), safety=SafetyFilter(client), signer=signer, inference=client)
+        planner=Planner(client), safety=SafetyFilter(client), signer=signer, inference=client,
+        spawn=lambda fn: fn(), sleep=lambda s: None, heartbeat=False)
     h = Harness(orch, vf, inf, fleet, prod_id, signer, settings)
     h_box["h"] = h
     yield h

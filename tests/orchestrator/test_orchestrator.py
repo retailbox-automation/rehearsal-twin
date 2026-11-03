@@ -340,8 +340,7 @@ def test_unsafe_goal_is_blocked(harness):
 
 def test_recover_marks_interrupted(harness):
     h = harness
-    rec = h.orch.create(preset="a")
-    h.orch._running = None  # as after a restart
+    rec = h.orch.create(preset="a")  # created, never run: as after a restart
     assert h.orch.recover() == [rec["id"]]
     assert h.orch.load(rec["id"])["status"] == "interrupted"
 

@@ -60,6 +60,17 @@ class Settings:
     pids: int = 256
     api_token: str = ""
     sse_max_s: float = 1800.0
+    twin_slot_wait_s: float = 600.0
+    reaper_ttl_s: float = 900.0
+    lease_stale_s: float = 300.0
+    restore_timeout_s: float = 1800.0
+    restore_poll_s: float = 10.0
+    restore_settle_s: float = 30.0
+    approval_window_s: float = 1800.0
+    judge_mode: bool = False
+    judge_runs_per_ip_hour: int = 3
+    daily_run_budget: int = 30
+    max_queue: int = 10
     missing: list[str] = field(default_factory=list)
 
     @classmethod
@@ -86,5 +97,15 @@ class Settings:
             pids=_int(env, "RT_RUN_PIDS", 256),
             api_token=env.get("RT_API_TOKEN", ""),
             sse_max_s=_float(env, "RT_SSE_MAX_S", 1800.0),
+            twin_slot_wait_s=_float(env, "RT_TWIN_SLOT_WAIT_S", 600.0),
+            reaper_ttl_s=_float(env, "RT_REAPER_TTL_S", 900.0),
+            lease_stale_s=_float(env, "RT_LEASE_STALE_S", 300.0),
+            restore_timeout_s=_float(env, "RT_RESTORE_TIMEOUT_S", 1800.0),
+            restore_settle_s=_float(env, "RT_RESTORE_SETTLE_S", 30.0),
+            approval_window_s=_float(env, "RT_APPROVAL_WINDOW_S", 1800.0),
+            judge_mode=(env.get("RT_JUDGE_MODE") or "off").strip().lower() in ("on", "1", "true", "yes"),
+            judge_runs_per_ip_hour=max(0, _int(env, "RT_JUDGE_RUNS_PER_IP_HOUR", 3)),
+            daily_run_budget=max(0, _int(env, "RT_DAILY_RUN_BUDGET", 30)),
+            max_queue=max(0, _int(env, "RT_MAX_QUEUE", 10)),
             missing=[n for n in LIVE_REQUIRED if not env.get(n)],
         )

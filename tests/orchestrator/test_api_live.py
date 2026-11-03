@@ -8,6 +8,9 @@ from fastapi.testclient import TestClient
 
 from rt.api.app import create_app
 from rt.receipts.verify_receipt import check as check_receipt
+from tests.orchestrator.conftest import API_TOKEN
+
+OPERATOR = {"Authorization": f"Bearer {API_TOKEN}"}
 
 
 def parse_sse(text: str) -> list[tuple[int, str, dict]]:
@@ -22,7 +25,7 @@ def parse_sse(text: str) -> list[tuple[int, str, dict]]:
 @pytest.fixture
 def api(harness):
     app = create_app(mode="live", orchestrator=harness.orch, run_in_background=lambda fn: fn())
-    return TestClient(app)
+    return TestClient(app, headers=OPERATOR)
 
 
 def start(api, **body):
@@ -120,19 +123,14 @@ def test_instances_live_from_vultr(api, harness):
 
 
 def test_token_guards_post(harness):
-    harness.settings.api_token = "t" * 24
     api = TestClient(create_app(mode="live", orchestrator=harness.orch, run_in_background=lambda fn: fn()))
-    assert api.post("/api/rehearsals", json={"preset": "a"}).status_code == 401
-    r = api.post("/api/rehearsals", json={"preset": "a"}, headers={"Authorization": "Bearer " + "t" * 24})
-    assert r.status_code == 202
+    assert api.post("/api/rehearsals", json={"preset": "a"}).status_code == 401  # judge mode is off
+    assert api.post("/api/rehearsals", json={"preset": "a"}, headers={"Authorization": "Bearer wrong"}).status_code == 401
+    r = api.post("/api/rehearsals", json={"preset": "a"}, headers={"X-RT-Token": API_TOKEN})
+    assert r.status_code == 202 and "owner_key" not in r.json()
     assert api.get(f"/api/rehearsals/{r.json()['id']}").status_code == 200  # reads stay open
-
-
-def test_busy_while_running(harness):
-    api = TestClient(create_app(mode="live", orchestrator=harness.orch, run_in_background=lambda fn: None))
-    assert api.post("/api/rehearsals", json={"preset": "a"}).status_code == 202
-    r = api.post("/api/rehearsals", json={"preset": "b"})
-    assert r.status_code == 409 and r.json()["detail"]["error"] == "busy"
+    view = api.get(f"/api/rehearsals/{r.json()['id']}").json()
+    assert api.post(f"/api/rehearsals/{view['id']}/approve", json=view["approval"]).status_code == 401
 
 
 def test_live_without_settings_is_503(tmp_path, monkeypatch):

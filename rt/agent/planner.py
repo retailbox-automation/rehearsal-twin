@@ -1,10 +1,12 @@
 """Planner on muse-glimmer-30b with structured output (response_format json_schema).
 
 plan(goal, scope, target_desc, files=()) -> {script, rationale, expected{paths[], tables{}, hosts[]}}
-explain(ledger, scope, script=None, files=()) -> {summary, out_of_scope[], safer_script, why_safer}
+explain(ledger, scope, script=None, files=(), rejected=None) -> {summary, out_of_scope[], safer_script, why_safer}
 
 files: names of the companion files that are copied next to the script. The script runs with
 that directory as its working directory, so the model is told to read them by relative name.
+rejected: why the control machine rejected the script being explained although it stayed in
+scope (for example it did nothing the task needs); passed to the model in a <rejected> block.
 
 The model never decides what is in or out of scope: out_of_scope[] is copied from the
 ledger (the deterministic check in rt.ledger); the model may only attach a note to a row by
@@ -126,7 +128,8 @@ class Planner:
         return {"script": obj["script"], "rationale": obj["rationale"],
                 "expected": {"paths": list(exp["paths"]), "tables": tables, "hosts": list(exp["hosts"])}}
 
-    def explain(self, ledger: dict, scope: dict, script: str | None = None, files=()) -> dict:
+    def explain(self, ledger: dict, scope: dict, script: str | None = None, files=(),
+                rejected: str | None = None) -> dict:
         m = self.client.masker
         rows = list(ledger.get("out_of_scope") or [])
         shown = rows[:OUT_OF_SCOPE_CAP]
@@ -142,6 +145,8 @@ class Planner:
         block = _files_block(files, m)
         if block:
             parts.append(block.strip("\n"))
+        if rejected:
+            parts.append(f"<rejected>\n{m.mask(rejected)}\n</rejected>")
         obj = self._ask(load_prompt("explain_system.md"), "\n\n".join(parts), "rehearsal_explain",
                         EXPLAIN_SCHEMA, self._check_explain, "explain")
         notes: dict[int, str] = {}

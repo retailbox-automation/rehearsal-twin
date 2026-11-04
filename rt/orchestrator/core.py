@@ -7,6 +7,8 @@
               -> Twin.destroy (always, finally) -> ledger re-checked HERE (rt.ledger.verify)
             out of scope -> input filter on ledger data -> planner.explain -> safer script
               -> next attempt on a NEW twin (at most 3 safer attempts)
+            safer attempt in scope, exit 0, but none of the original's in-scope effects (goal.py)
+              -> no_effect, not approvable; the reason goes into the next explain
             in scope, exit 0 -> production state version read -> awaiting_approval
     approve(ledger_sha256, script_sha256, snapshot_id, prod_state_version, files_sha256[, override_drift])
             any field off, golden snapshot changed or production changed -> Conflict (HTTP 409);
@@ -48,7 +50,7 @@ from typing import Any, Callable
 from rt.ledger import compare as ledger_compare
 from rt.ledger import finalize, ledger_sha256, normalize_scope, verify
 from rt.ledger.scope import ScopeError
-from rt.orchestrator import remote
+from rt.orchestrator import goal, remote
 from rt.orchestrator.leases import Leases
 from rt.orchestrator.presets import load_presets
 from rt.orchestrator.settings import Settings
@@ -314,6 +316,7 @@ class Orchestrator:
                 if script is None:
                     return rec
             n, kind, seen = 1, "original", set()
+            task_effects: set = set()
             while True:
                 seen.add(sha256_hex(script.encode()))
                 a = self._rehearse_once(rec, n, kind, script)
@@ -321,14 +324,21 @@ class Orchestrator:
                     self._save(rec, status="failed", error=f"attempt {n}: the twin's ledger failed verification "
                                                             f"on control: {'; '.join(a['verify']['problems'])}")
                     break
+                effects = goal.in_scope_effects(self.store.read_json(rid, f"ledger-{n}.json"), rec["scope"])
+                if kind == "original":
+                    task_effects = effects
+                    self._save(rec, task_effects={"total": len(effects), "examples": goal.examples(effects)})
+                feedback = self._goal_check(rec, a, task_effects, effects) if kind == "safer" else None
                 if a["acceptable"]:
                     self._ready_for_approval(rec, a)
                     break
                 if n - 1 >= self.s.max_safer_attempts:
-                    self._save(rec, status="no_safe_variant",
-                               error=f"no variant stayed in scope and exited 0 in {n} attempts")
+                    error = f"no variant stayed in scope and exited 0 in {n} attempts"
+                    if feedback:
+                        error = f"no variant stayed in scope, exited 0 and kept the task in {n} attempts; " + feedback
+                    self._save(rec, status="no_safe_variant", error=error)
                     break
-                script = self._explain(rec, a, script)
+                script = self._explain(rec, a, script, feedback=feedback)
                 if sha256_hex(script.encode()) in seen:
                     self._save(rec, status="no_safe_variant", error="the safer variant repeats an earlier script")
                     break
@@ -485,7 +495,21 @@ class Orchestrator:
         self._emit(rid, "twin_summary", {"n": n, "verdict": a["verdict"]})
         return a
 
-    def _explain(self, rec: dict, a: dict, script: str) -> str:
+    def _goal_check(self, rec: dict, a: dict, task_effects: set, effects: set) -> str | None:
+        """Goal preserved: an acceptable safer attempt that shares none of the original's in-scope
+        effects is marked no_effect and is not approvable. Returns the reason for the next explain."""
+        if not a["acceptable"]:
+            return None
+        found = goal.check(task_effects, effects)
+        if found is None:
+            return None
+        a.update(acceptable=False, status="no_effect", goal_check=found)
+        self._save(rec)
+        self._emit(rec["id"], "no_effect", {"n": a["n"], **found})
+        self._emit_view(rec)
+        return found["reason"]
+
+    def _explain(self, rec: dict, a: dict, script: str, feedback: str | None = None) -> str:
         rid, n = rec["id"], a["n"]
         self._save(rec, status="reviewing")
         self._emit(rid, "step", {"step": "review"})
@@ -504,7 +528,8 @@ class Orchestrator:
                 a["data_check_error"] = _err(e)
                 self._emit(rid, "error", {"message": f"input filter on ledger data failed: {_err(e)}"})
         # Companion files sit in the script's working directory; the model is told their names.
-        ex = self.planner.explain(ledger, rec["scope"], script, files=sorted(rec.get("files") or {}))
+        ex = self.planner.explain(ledger, rec["scope"], script, files=sorted(rec.get("files") or {}),
+                                  rejected=feedback)
         self.store.write_json(rid, f"explain-{n}.json", ex)
         a["explain"] = {"summary": ex["summary"], "why_safer": ex["why_safer"],
                         "safer_script_sha256": sha256_hex(ex["safer_script"].encode())}

@@ -290,6 +290,13 @@ def timeline(events: list[dict]) -> list[dict]:
     return out
 
 
+def attempt_status_text(a: dict) -> str:
+    """One line per attempt; no_effect (in scope, exit 0, none of the task's effects) says why."""
+    if a.get("status") == "no_effect":
+        return "no effect: " + ((a.get("goal_check") or {}).get("reason") or "did nothing the task needs")
+    return str(a.get("status") or "")
+
+
 def instances_view(record: dict) -> list[dict]:
     items = [{"id": record.get("prod_instance_id") or "prod", "label": record.get("prod_label") or "prod",
               "dot": "green", "meta": "public · rt-keep"}]
@@ -328,7 +335,8 @@ def screen_view(record: dict, *, presets: list[str], ledger: dict | None, prod_l
         "ledger_view": rows,
         "summary": screen_summary(ledger, rows) if ledger else screen_summary({}, []),
         "attempts": [{k: a.get(k) for k in ("n", "kind", "status", "verdict", "ledger_sha256", "script_sha256",
-                                             "out_of_scope_total", "error")} | {"twin": (a.get("twin") or {}).get("label")}
+                                             "out_of_scope_total", "error")}
+                     | {"twin": (a.get("twin") or {}).get("label"), "status_text": attempt_status_text(a)}
                      for a in attempts],
         "instances": instances_view(record),
         "approval": record.get("approval") if record.get("status") == "awaiting_approval" else None,

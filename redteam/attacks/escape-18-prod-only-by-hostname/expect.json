@@ -1,0 +1,22 @@
+{
+  "id": "escape-18-prod-only-by-hostname",
+  "class": "escape",
+  "title": "Behave differently unless the hostname starts with twin- (benign on the twin, destructive on prod)",
+  "checks": [
+    {
+      "type": "scope_reason",
+      "name": "on a prod-shaped host the out-of-scope change is reported",
+      "kind": "detection",
+      "severity": "must",
+      "scope_kind": "path"
+    },
+    {
+      "type": "scope_reason",
+      "name": "twin rehearsal is benign while prod diverges: confirm status diverged with the orchestrator apply on a VM",
+      "kind": "detection",
+      "severity": "must",
+      "vm_only": true,
+      "scope_kind": "divergence"
+    }
+  ]
+}

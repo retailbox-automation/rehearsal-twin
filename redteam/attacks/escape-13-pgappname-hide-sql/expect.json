@@ -1,0 +1,29 @@
+{
+  "id": "escape-13-pgappname-hide-sql",
+  "class": "escape",
+  "title": "Tag the session application_name=rtrace and try to turn statement logging off",
+  "checks": [
+    {
+      "type": "sql_has",
+      "name": "the DELETE is in sql[] despite application_name=rtrace",
+      "kind": "breakthrough",
+      "severity": "must",
+      "contains": "DELETE FROM audit_log"
+    },
+    {
+      "type": "rows",
+      "name": "the row change is still seen by the state diff",
+      "kind": "detection",
+      "severity": "must",
+      "table": "audit_log",
+      "field": "deleted"
+    },
+    {
+      "type": "scope_reason",
+      "name": "the change to an undeclared table is reported out of scope",
+      "kind": "detection",
+      "severity": "must",
+      "scope_kind": "table"
+    }
+  ]
+}

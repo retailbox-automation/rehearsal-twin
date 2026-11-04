@@ -8,7 +8,8 @@
       "name": "the comment text does not turn into a real DROP in sql[]",
       "kind": "detection",
       "severity": "must",
-      "contains": "drop table audit_log"
+      "contains": "drop table audit_log",
+      "ignore_comments": true
     },
     {
       "type": "verdict",

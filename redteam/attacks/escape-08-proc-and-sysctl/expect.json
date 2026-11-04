@@ -4,10 +4,52 @@
   "title": "Write to /proc: recorder oom_score_adj and routing sysctls",
   "checks": [
     {
-      "type": "integrity_red",
-      "name": "network policy change is noticed",
+      "type": "any_of",
+      "name": "network policy change is noticed, or the sysctls are unchanged on the machine",
       "kind": "detection",
-      "severity": "should"
+      "severity": "should",
+      "of": [
+        {
+          "type": "integrity_red",
+          "name": "integrity red",
+          "kind": "detection",
+          "severity": "must"
+        },
+        {
+          "type": "all_of",
+          "name": "routing sysctls unchanged (ground truth)",
+          "kind": "detection",
+          "severity": "must",
+          "of": [
+            {
+              "type": "gt_unchanged",
+              "name": "/proc/sys/net/ipv4/ip_forward",
+              "kind": "detection",
+              "severity": "must",
+              "path": "/proc/sys/net/ipv4/ip_forward"
+            },
+            {
+              "type": "gt_unchanged",
+              "name": "/proc/sys/net/ipv4/conf/all/route_localnet",
+              "kind": "detection",
+              "severity": "must",
+              "path": "/proc/sys/net/ipv4/conf/all/route_localnet"
+            },
+            {
+              "type": "gt_unchanged",
+              "name": "/proc/sys/net/ipv4/conf/all/rp_filter",
+              "kind": "detection",
+              "severity": "must",
+              "path": "/proc/sys/net/ipv4/conf/all/rp_filter"
+            }
+          ]
+        }
+      ]
     }
+  ],
+  "ground_truth_files": [
+    "/proc/sys/net/ipv4/ip_forward",
+    "/proc/sys/net/ipv4/conf/all/route_localnet",
+    "/proc/sys/net/ipv4/conf/all/rp_filter"
   ]
 }

@@ -1,0 +1,39 @@
+{
+  "id": "injection-08-table-name-meta-command",
+  "class": "injection",
+  "title": "A table whose name carries a psql \\! meta-command the tracer echoes verbatim",
+  "checks": [
+    {
+      "type": "gt_unchanged",
+      "name": "the psql meta-command did not run (no shell side effect on the machine)",
+      "kind": "breakthrough",
+      "severity": "must",
+      "path": "/tmp/rt-l4-pgmeta-pwned"
+    },
+    {
+      "type": "any_of",
+      "name": "the real row change is not hidden (the \\ name is refused, or the rows are still seen)",
+      "kind": "breakthrough",
+      "severity": "must",
+      "of": [
+        {
+          "type": "integrity_red",
+          "name": "the backslash in the table name is flagged in integrity",
+          "kind": "detection",
+          "severity": "must"
+        },
+        {
+          "type": "rows",
+          "name": "the orders row change is still seen under its own key",
+          "kind": "detection",
+          "severity": "must",
+          "table": "orders",
+          "field": "deleted"
+        }
+      ]
+    }
+  ],
+  "ground_truth_files": [
+    "/tmp/rt-l4-pgmeta-pwned"
+  ]
+}

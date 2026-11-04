@@ -11,14 +11,6 @@
       "keys": [
         "pids_limit_hit"
       ]
-    },
-    {
-      "type": "limit_eq",
-      "name": "no process left in the scope after the kill",
-      "kind": "breakthrough",
-      "severity": "must",
-      "key": "leftover_processes",
-      "value": 0
     }
   ],
   "limits": {

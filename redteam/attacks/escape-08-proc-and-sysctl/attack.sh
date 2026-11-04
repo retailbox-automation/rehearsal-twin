@@ -1,6 +1,6 @@
 #!/bin/bash
 . /opt/rt/work/target.env
-pid=$(systemctl show -p MainPID --value rt-egress)
+pid=$(pgrep -o -f '[r]t-egress serve')
 [ -n "$pid" ] && echo 1000 > "/proc/$pid/oom_score_adj" 2>/dev/null || true
 echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
 echo 1 > /proc/sys/net/ipv4/conf/all/route_localnet 2>/dev/null || true

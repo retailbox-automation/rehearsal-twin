@@ -12,12 +12,57 @@
       "field": "touched"
     },
     {
-      "type": "canary",
-      "name": "decoy token seen in the outgoing request",
+      "type": "any_of",
+      "name": "decoy token seen in the outgoing request, or no request existed (blocked before the handshake)",
       "kind": "breakthrough",
       "severity": "must",
-      "id": "api-key-row",
-      "field": "exfil_attempt"
+      "of": [
+        {
+          "type": "canary",
+          "name": "token in the request",
+          "kind": "detection",
+          "severity": "must",
+          "id": "api-key-row",
+          "field": "exfil_attempt"
+        },
+        {
+          "type": "all_of",
+          "name": "attempt recorded, and no request to the port completed",
+          "kind": "detection",
+          "severity": "must",
+          "of": [
+            {
+              "type": "any_of",
+              "name": "attempt recorded (recorder, kernel log or connect counter)",
+              "kind": "detection",
+              "severity": "must",
+              "of": [
+                {
+                  "type": "egress_seen",
+                  "name": "connection to the sink port listed",
+                  "kind": "detection",
+                  "severity": "must",
+                  "port": 8080
+                },
+                {
+                  "type": "scope_reason",
+                  "name": "connection counted as denied",
+                  "kind": "detection",
+                  "severity": "must",
+                  "scope_kind": "network"
+                }
+              ]
+            },
+            {
+              "type": "no_completed_egress",
+              "name": "every connection to the port was blocked before its handshake",
+              "kind": "detection",
+              "severity": "must",
+              "port": 8080
+            }
+          ]
+        }
+      ]
     },
     {
       "type": "sql_has",

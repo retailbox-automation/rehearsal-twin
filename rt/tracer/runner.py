@@ -16,7 +16,9 @@ be able to undo it:
 * no CAP_NET_ADMIN / CAP_NET_RAW / CAP_SYS_ADMIN ..., no AF_NETLINK or AF_PACKET:
   iptables, routes, raw sockets, namespaces and cgroup moves all fail.
 * the recorder runs as its own user: without CAP_KILL the script cannot signal it,
-  and with ProtectProc=invisible (no CAP_SYS_PTRACE) it cannot see it in /proc.
+  with ProtectProc=invisible (no CAP_SYS_PTRACE) it cannot see it in /proc, and
+  without CAP_SETUID / CAP_SETGID it cannot become that user (signal permission
+  only compares uids). The script stays root; su, sudo and runuser fail inside.
 * no way to run code outside the sandbox later: the systemd and D-Bus control
   sockets are hidden, cron, systemd units, shell and login startup files,
   ld.so preload, sshd/pam config, /usr and the tracer itself are read-only.
@@ -41,7 +43,7 @@ OUTPUT_LIMIT = 64 * 1024
 FAKE_RANGE = "198.18.0.0/15"
 DROP_CAPS = ("CAP_NET_ADMIN", "CAP_NET_RAW", "CAP_SYS_ADMIN", "CAP_SYS_MODULE", "CAP_SYS_PTRACE", "CAP_BPF",
              "CAP_SYS_BOOT", "CAP_SYS_RAWIO", "CAP_SYS_TIME", "CAP_MKNOD", "CAP_DAC_READ_SEARCH",
-             "CAP_AUDIT_CONTROL", "CAP_PERFMON", "CAP_SYSLOG", "CAP_KILL")
+             "CAP_AUDIT_CONTROL", "CAP_PERFMON", "CAP_SYSLOG", "CAP_KILL", "CAP_SETUID", "CAP_SETGID")
 # Files that root processes outside the sandbox would execute or trust later.
 READ_ONLY_PATHS = (
     "/opt/rt",

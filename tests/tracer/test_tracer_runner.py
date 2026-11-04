@@ -56,6 +56,16 @@ def test_service_mode_command():
     assert "BindReadOnlyPaths=/opt/rt/state/resolv.conf:/etc/resolv.conf" in p2
 
 
+def test_sandbox_cannot_become_or_signal_another_user():
+    """The recorder runs as rt-egress: the root script must not switch to that uid, signal it or see it."""
+    p = props(cmd())
+    caps = next(x for x in p if x.startswith("CapabilityBoundingSet=~")).split("~", 1)[1].split()
+    for cap in ("CAP_SETUID", "CAP_SETGID", "CAP_KILL", "CAP_SYS_PTRACE"):
+        assert cap in caps, cap
+    assert "ProtectProc=invisible" in p
+    assert "NoNewPrivileges=yes" in p  # no setuid binaries to get the capabilities back
+
+
 def test_extra_allow_and_fractional_wall():
     argv = runner.build_command("u", "/s", 1, 1, 2.5, "/st", "/h", "/", allow=("10.77.0.3",))
     p = props(argv)

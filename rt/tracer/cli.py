@@ -1,7 +1,7 @@
 """rtrace: before / run / after / diff on the target machine (Python 3 stdlib + psql).
 
     rtrace before --scope scope.json > state0.json
-    rtrace run --script s.sh --wall 60 --mem 512M --pids 256 > run.json
+    rtrace run --script s.sh --wall 60 --mem 512M --pids 256 --scope scope.json > run.json
     rtrace after --scope scope.json > state1.json
     rtrace diff state0.json state1.json run.json --scope scope.json > ledger.json
 
@@ -195,13 +195,21 @@ def settle(cfg: dict, settle_max: float, quiet_s: float = 2.0, step: float = 0.5
             return
 
 
+def sandbox_env(cfg: dict) -> tuple:
+    user = (cfg.get("pg") or {}).get("script_user")
+    return (f"PGUSER={user}",) if user else ()
+
+
 def cmd_run(args, cfg) -> dict:
+    scope_raw = _load_json(args.scope) if args.scope else None
+    # Writable in the sandbox: exactly what `before`/`after` scan with the same scope (real paths).
+    rw = runner.writable_paths(tracked_roots(cfg, scope_raw), protected=cfg.get("exclude") or ())
     start_offsets = log_offsets(cfg)
     start_ipt = iptables_state()
     res = runner.run_script(args.script, wall=args.wall, mem=args.mem, pids=args.pids, cwd=args.cwd,
                             slice_name=cfg.get("run_slice", "rt.slice"),
                             stats_dir=(cfg.get("self_root") or config.RT_HOME) + "/state",
-                            allow=tuple(cfg.get("sandbox_allow") or ()))
+                            allow=tuple(cfg.get("sandbox_allow") or ()), rw_paths=rw, env=sandbox_env(cfg))
     res["kind"] = "rt-run"
     res["offsets_start"] = start_offsets
     res["offsets_end"] = log_offsets(cfg)
@@ -261,6 +269,7 @@ def main(argv=None) -> int:
     r.add_argument("--mem", default="512M")
     r.add_argument("--pids", type=int, default=256)
     r.add_argument("--cwd")
+    r.add_argument("--scope", help="scope.json: declared paths outside the tracked roots become writable")
     a = sub.add_parser("after")
     a.add_argument("--scope")
     a.add_argument("--settle-max", type=float, default=20.0)

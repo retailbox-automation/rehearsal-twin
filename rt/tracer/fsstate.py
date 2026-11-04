@@ -58,9 +58,14 @@ def entry_for(path: str, st: os.stat_result, hash_limit: int) -> dict:
 
 
 def scan(roots, exclude=(), hash_limit: int = 4 * 1024 * 1024) -> dict:
-    """Return {path: entry} for every entry under the roots (symlinks not followed)."""
+    """Return {path: entry} for every entry under the roots (symlinks not followed).
+
+    A root that is itself a symlink to a directory is recorded as the link and its target is
+    walked too, with every entry named under the root (`/srv/app/x` for /srv -> /data/srv): the
+    sandbox makes the real directory writable, so its contents must be traced.
+    """
     out = {}
-    stack = []
+    stack = []  # (directory on disk, the name it is reported under)
     for r in roots:
         r = os.path.normpath(r)
         if _excluded(r, exclude):
@@ -71,25 +76,29 @@ def scan(roots, exclude=(), hash_limit: int = 4 * 1024 * 1024) -> dict:
             continue
         out[r] = entry_for(r, st, hash_limit)
         if stat.S_ISDIR(st.st_mode):
-            stack.append(r)
+            stack.append((r, r))
+        elif stat.S_ISLNK(st.st_mode):
+            real = os.path.realpath(r)
+            if os.path.isdir(real) and not _excluded(real, exclude):
+                stack.append((real, r))
     while stack:
-        d = stack.pop()
+        d, shown = stack.pop()
         try:
             it = list(os.scandir(d))
         except OSError as exc:
-            out.setdefault(d, {})["err"] = exc.__class__.__name__
+            out.setdefault(shown, {})["err"] = exc.__class__.__name__
             continue
         for de in it:
-            p = de.path
-            if _excluded(p, exclude):
+            p = os.path.join(shown, de.name)
+            if _excluded(p, exclude) or _excluded(de.path, exclude):
                 continue
             try:
                 st = de.stat(follow_symlinks=False)
             except OSError:
                 continue
-            out[p] = entry_for(p, st, hash_limit)
+            out[p] = entry_for(de.path, st, hash_limit)
             if stat.S_ISDIR(st.st_mode):
-                stack.append(p)
+                stack.append((de.path, p))
     return out
 
 

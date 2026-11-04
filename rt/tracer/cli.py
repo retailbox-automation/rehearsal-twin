@@ -252,7 +252,11 @@ def kernel_log(since: float | None, until: float | None) -> str:
 def cmd_diff(args, cfg) -> dict:
     state0, state1, run = _load_json(args.state0), _load_json(args.state1), _load_json(args.run)
     scope_raw = _load_json(args.scope) if args.scope else {}
-    facts = diff.build_facts(state0, state1, run, read_sources(cfg, state0, state1, run), cfg)
+    sources = read_sources(cfg, state0, state1, run)
+    m1 = state1.get("files") or {}
+    files, _ = fsstate.diff(state0.get("files") or {}, m1)
+    sources["large_hashes"] = fsstate.hash_unhashed(files["created"] + files["modified"], m1)
+    facts = diff.build_facts(state0, state1, run, sources, cfg)
     facts["generated_at"] = _now_iso()
     return finalize(facts, scope_raw)
 

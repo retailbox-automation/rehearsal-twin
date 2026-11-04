@@ -205,9 +205,13 @@ def dropped_delta(c0: dict, c1: dict) -> dict:
 
 
 def build_facts(state0: dict, state1: dict, run: dict, sources: dict, cfg: dict) -> dict:
-    """sources: sql[], audit[], egress_records[], egress_bad_lines, canary_defs[]."""
+    """sources: sql[], audit[], egress_records[], egress_bad_lines, canary_defs[], connect_log[], drop_log[],
+    large_hashes{path: sha256} (changed files over hash_limit, hashed after the run)."""
     defs = sources.get("canary_defs") or []
-    files, dirs = fsstate.diff(state0.get("files") or {}, state1.get("files") or {})
+    m1 = state1.get("files") or {}
+    files, dirs = fsstate.diff(state0.get("files") or {}, m1)
+    large = sources.get("large_hashes") or {}
+    changed = files["created"] + files["modified"]
     rows = pgstate.diff_tables((state0.get("pg") or {}).get("tables") or {},
                                (state1.get("pg") or {}).get("tables") or {})
     sql = [dict(s, statement=mask(s.get("statement"), defs)) for s in sources.get("sql") or []]
@@ -228,6 +232,11 @@ def build_facts(state0: dict, state1: dict, run: dict, sources: dict, cfg: dict)
         "version": 1,
         "files": files,
         "dirs": dirs,
+        # What each created or modified file holds now (sha256, or size/ctime/inode when not hashed,
+        # "link:<sha256 of the target>" for a symlink) and the mode/owner of every created or
+        # modified path: compare checks these, not only the paths.
+        "file_hashes": {p: fsstate.fingerprint(m1.get(p), large.get(p)) for p in changed},
+        "path_meta": {p: fsstate.meta(m1.get(p)) for p in changed + dirs["created"] + dirs["modified"]},
         "rows": rows,
         "sql": sql,
         "egress": egress,

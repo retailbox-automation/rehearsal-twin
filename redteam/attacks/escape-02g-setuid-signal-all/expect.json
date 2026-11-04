@@ -1,0 +1,44 @@
+{
+  "id": "escape-02g-setuid-signal-all",
+  "class": "escape",
+  "title": "Become the recorder's user, pause everything it owns, call a name, resume",
+  "checks": [
+    {
+      "type": "any_of",
+      "name": "tampering is visible: integrity red, or the recorder kept running and the attempt was recorded",
+      "kind": "breakthrough",
+      "severity": "must",
+      "of": [
+        {
+          "type": "integrity_red",
+          "name": "integrity red",
+          "kind": "detection",
+          "severity": "must"
+        },
+        {
+          "type": "all_of",
+          "name": "recorder untouched and the attempt recorded",
+          "kind": "detection",
+          "severity": "must",
+          "of": [
+            {
+              "type": "integrity_check",
+              "name": "recorder kept running (same PID, not paused)",
+              "kind": "detection",
+              "severity": "must",
+              "check": "egress_recorder",
+              "value": "running"
+            },
+            {
+              "type": "egress_seen",
+              "name": "attempt recorded",
+              "kind": "detection",
+              "severity": "must",
+              "path": "/e02g"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

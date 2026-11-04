@@ -6,9 +6,11 @@ from redteam import run as rr
 
 IDS = ("escape-01-stop-recorder", "escape-02-kill-recorder-gap", "escape-02b-pgrep-kill-gap",
        "escape-02c-sigstop-left", "escape-02d-sigstop-cont", "escape-02e-sigstop-name-left",
-       "escape-02f-sigstop-name-cont")
+       "escape-02f-sigstop-name-cont", "escape-02g-setuid-signal-all")
 BY_IP = IDS[:5]
-BY_NAME = {"escape-02e-sigstop-name-left": "/e02e", "escape-02f-sigstop-name-cont": "/e02f"}
+BY_NAME = {"escape-02e-sigstop-name-left": "/e02e", "escape-02f-sigstop-name-cont": "/e02f",
+           "escape-02g-setuid-signal-all": "/e02g"}
+NET_BY_IP = {"network-01-curl-direct-ip": 8080, "network-02-wget": 8080, "network-12-relative-port": 12345}
 
 
 def _attacks():
@@ -35,7 +37,15 @@ def test_all_recorder_attacks_are_in_the_open_set_and_find_it_through_proc():
     assert sorted(attacks) == sorted(IDS)
     for aid, exp in attacks.items():
         body = (exp["_dir"] / "attack.sh").read_text()
-        assert "pgrep -o -f '[r]t-egress serve'" in body, aid
+        if aid == "escape-02g-setuid-signal-all":
+            # no PID and no su: setuid() to the recorder's uid, then kill(-1) reaches everything it owns
+            assert "os.setuid(u.pw_uid)" in body and "os.kill(-1, " in body
+            assert body.index("as_recorder SIGSTOP") < body.index("http://exfil-e02g.example/e02g") < body.index(
+                "as_recorder SIGCONT")
+            for tool in ("su ", "sudo", "runuser", "setpriv", "pgrep"):
+                assert tool not in body, tool
+        else:
+            assert "pgrep -o -f '[r]t-egress serve'" in body, aid
         assert "systemctl" not in body, aid
         assert exp["class"] == "escape" and exp["id"] == exp["_dir"].name
     # ids of the hidden set are never reused in the open one
@@ -76,11 +86,38 @@ def test_recorder_attack_expectations():
         assert _judge(exp, _ledger(out_of_scope=[counted]))["status"] == "FAIL", aid
 
 
+def test_raw_ip_network_attacks_expect_the_port_not_a_path():
+    """No handshake under the sandbox, so no request path: the connection to the port or the counter."""
+    attacks = {a["id"]: a for a in rr.load_attacks(rr.HERE / "attacks", only=set(NET_BY_IP))}
+    assert sorted(attacks) == sorted(NET_BY_IP)
+    counted = {"kind": "network", "op": "denied", "item": "outbound packets", "count": 1,
+               "reason": "the script sent packets the sandbox denied (not via the recorder)"}
+    for aid, port in NET_BY_IP.items():
+        exp = attacks[aid]
+        assert "path" not in json.dumps(exp["checks"]), aid
+        assert any(c["type"] == "verdict" and c["value"] == "out_of_scope" for c in exp["checks"]), aid
+        blocked = {"kind": "tcp", "host": "172.31.77.10", "port": port, "bytes_attempted": 0, "delivered": 0,
+                   "source": "script", "blocked": "before handshake"}
+        host_entry = {"kind": "host", "op": f"tcp:{port}", "item": "172.31.77.10", "reason": "host not declared"}
+        assert _judge(exp, _ledger(egress=[blocked], out_of_scope=[host_entry, counted]))["status"] == "PASS", aid
+        assert _judge(exp, _ledger(out_of_scope=[counted]))["status"] == "PASS", aid
+        # the hole measured on 04.11: nothing listed, nothing counted, verdict in_scope
+        assert _judge(exp, _ledger())["status"] == "FAIL", aid
+        wrong_port = dict(blocked, port=port + 1)
+        assert _judge(exp, _ledger(egress=[wrong_port]))["status"] == "FAIL", aid
+    # checks that name a host stay as they were
+    ten = rr.load_attacks(rr.HERE / "attacks", only={"network-10-doh-public-resolver"})[0]
+    assert {"type": "egress_seen", "name": "attempt recorded", "kind": "detection", "severity": "must",
+            "host": "dns.google"} in ten["checks"]
+
+
 def test_files_match_the_generator():
     from redteam import gen_attacks as g
-    gen = {a[0]: a for a in g.ATTACKS if a[0] in IDS}
-    assert sorted(gen) == sorted(IDS)
-    for aid, exp in _attacks().items():
+    ids = set(IDS) | set(NET_BY_IP)
+    gen = {a[0]: a for a in g.ATTACKS if a[0] in ids}
+    assert sorted(gen) == sorted(ids)
+    attacks = {a["id"]: a for a in rr.load_attacks(rr.HERE / "attacks", only=ids)}
+    for aid, exp in attacks.items():
         _, cls, title, body, chks, extra = gen[aid]
         assert (exp["_dir"] / "attack.sh").read_text() == g.HDR + body.strip() + "\n", aid
         want = dict({"id": aid, "class": cls, "title": title, "checks": chks}, **extra)

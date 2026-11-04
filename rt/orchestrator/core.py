@@ -7,11 +7,18 @@
               -> Twin.destroy (always, finally) -> ledger re-checked HERE (rt.ledger.verify)
             out of scope -> input filter on ledger data -> planner.explain -> safer script
               -> next attempt on a NEW twin (at most 3 safer attempts)
+            safer attempt in scope, exit 0, but none of the original's in-scope effects (goal.py)
+              -> no_effect, not approvable; the reason goes into the next explain
             in scope, exit 0 -> production state version read -> awaiting_approval
-    approve(ledger_sha256, script_sha256, snapshot_id, prod_state_version)
-            any field off, golden snapshot changed or production changed -> Conflict (HTTP 409)
+    approve(ledger_sha256, script_sha256, snapshot_id, prod_state_version, files_sha256[, override_drift])
+            any field off, golden snapshot changed or production changed -> Conflict (HTTP 409);
+            companion files re-hashed (they are part of what was approved); a twin that did not start
+            from production's current data (snapshot_drift) -> 409 unless override_drift is true, and
+            the override is written into the receipt
     apply(): same tracer on production; before the script runs its state must still have the
             approved version -> ledger re-checked here -> compare(twin, prod) -> signed receipt
+            -> "applied" only when production matched the rehearsal and its own verdict (computed
+            here) is in scope; otherwise "diverged": the receipt is still signed, and says so
 
     restore_prod(): Prod.restore(golden snapshot); the timer asks only when nothing is open; after it,
             every rehearsal awaiting approval whose twin started from exactly the restored state
@@ -23,12 +30,18 @@ Every step appends an event to events.jsonl; the API streams it as SSE.
 
 Concurrency: rehearsals queue (FIFO) and at most RT_MAX_TWINS_ALIVE run at once, each holding
 at most one twin, leased so the reaper never takes it. Everything that touches production
-(state probe, approval probe, apply, restore) holds one production lock.
+(state probe, approval probe, apply, restore) holds one production lock. Production reserved
+for an apply or a restore also holds an exclusive flock on <data_dir>/prod.lock, from approve()
+to the end of apply() (or from reserve_restore() to the end of restore_prod()): a second control
+process on the same data dir (the CLI next to the API) gets Busy, never a second apply. The
+kernel drops the flock when the process dies.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
 import threading
 import time
 from collections import deque
@@ -37,7 +50,7 @@ from typing import Any, Callable
 from rt.ledger import compare as ledger_compare
 from rt.ledger import finalize, ledger_sha256, normalize_scope, verify
 from rt.ledger.scope import ScopeError
-from rt.orchestrator import remote
+from rt.orchestrator import goal, remote
 from rt.orchestrator.leases import Leases
 from rt.orchestrator.presets import load_presets
 from rt.orchestrator.settings import Settings
@@ -46,8 +59,9 @@ from rt.orchestrator.view import effect_counts, ledger_view, screen_view
 from rt.twin.lifecycle import PROTECTED_TAGS, TWIN_TAG, Prod, Twin, has_public_ip
 
 RUNNING = ("queued", "planning", "rehearsing", "reviewing", "applying")
-TERMINAL = ("failed", "no_safe_variant", "blocked_goal", "applied", "apply_failed", "apply_aborted", "interrupted")
-APPROVAL_FIELDS = ("ledger_sha256", "script_sha256", "snapshot_id", "prod_state_version")
+TERMINAL = ("failed", "no_safe_variant", "blocked_goal", "applied", "diverged", "apply_failed", "apply_aborted",
+            "interrupted")
+APPROVAL_FIELDS = ("ledger_sha256", "script_sha256", "snapshot_id", "prod_state_version", "files_sha256")
 MAX_SCRIPT_CHARS = 20000
 MAX_GOAL_CHARS = 4000
 
@@ -72,6 +86,15 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def files_digest(hashes: dict[str, str]) -> str:
+    """One sha256 over the companion files' names and sha256 (sorted): what an approval binds."""
+    return sha256_hex(json.dumps(dict(sorted(hashes.items())), sort_keys=True, separators=(",", ":")).encode())
+
+
+class FilesChanged(RuntimeError):
+    """A stored companion file no longer has the hash recorded when the rehearsal was created."""
+
+
 def _err(e: BaseException) -> str:
     return f"{type(e).__name__}: {e}"[:500]
 
@@ -83,6 +106,19 @@ def _thread(fn: Callable[[], object]) -> None:
         except Exception as e:  # each task records its own failure; this is the last resort
             print(f"rt.orchestrator: background task failed: {_err(e)}", flush=True)
     threading.Thread(target=safe, daemon=True).start()
+
+
+def divergence_reasons(verify_problems: list, prod_summary: dict, cmp: dict) -> list[str]:
+    """Why an apply is not a success. Empty: production did what the twin predicted, in scope."""
+    out = []
+    if verify_problems:
+        out.append("the production ledger failed verification on control: " + "; ".join(verify_problems))
+    if prod_summary.get("verdict") != "in_scope":
+        out.append(f"production verdict {prod_summary.get('verdict')}: "
+                   f"{prod_summary.get('out_of_scope_total')} out of scope")
+    if not cmp.get("match"):
+        out.append(f"production differs from the rehearsal: {len(cmp.get('surprises') or [])} surprises")
+    return out
 
 
 class Orchestrator:
@@ -107,6 +143,35 @@ class Orchestrator:
         self._active: set[str] = set()
         self._prod_lock = threading.RLock()
         self._prod_owner: str | None = None
+        self._prod_flock: int | None = None
+
+    # ------------------------------------------------------------------ production reservation
+    def _take_prod_flock(self, owner: str) -> None:
+        """Exclusive, non-blocking flock on <data_dir>/prod.lock (call with self._lock held)."""
+        path = self.s.data_dir / "prod.lock"
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise Busy("production is busy (another control process holds prod.lock)") from None
+        os.ftruncate(fd, 0)
+        os.write(fd, json.dumps({"owner": owner, "pid": os.getpid(), "since": utc_now()}).encode())
+        self._prod_flock = fd
+
+    def _drop_prod_flock(self) -> None:
+        fd, self._prod_flock = self._prod_flock, None
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    def _release_prod(self, owner: str) -> None:
+        with self._lock:
+            if self._prod_owner == owner:
+                self._prod_owner = None
+                self._drop_prod_flock()
 
     # ------------------------------------------------------------------ records and events
     def _emit(self, rid: str, type_: str, data: dict | None = None) -> None:
@@ -251,6 +316,7 @@ class Orchestrator:
                 if script is None:
                     return rec
             n, kind, seen = 1, "original", set()
+            task_effects: set = set()
             while True:
                 seen.add(sha256_hex(script.encode()))
                 a = self._rehearse_once(rec, n, kind, script)
@@ -258,14 +324,21 @@ class Orchestrator:
                     self._save(rec, status="failed", error=f"attempt {n}: the twin's ledger failed verification "
                                                             f"on control: {'; '.join(a['verify']['problems'])}")
                     break
+                effects = goal.in_scope_effects(self.store.read_json(rid, f"ledger-{n}.json"), rec["scope"])
+                if kind == "original":
+                    task_effects = effects
+                    self._save(rec, task_effects={"total": len(effects), "examples": goal.examples(effects)})
+                feedback = self._goal_check(rec, a, task_effects, effects) if kind == "safer" else None
                 if a["acceptable"]:
                     self._ready_for_approval(rec, a)
                     break
                 if n - 1 >= self.s.max_safer_attempts:
-                    self._save(rec, status="no_safe_variant",
-                               error=f"no variant stayed in scope and exited 0 in {n} attempts")
+                    error = f"no variant stayed in scope and exited 0 in {n} attempts"
+                    if feedback:
+                        error = f"no variant stayed in scope, exited 0 and kept the task in {n} attempts; " + feedback
+                    self._save(rec, status="no_safe_variant", error=error)
                     break
-                script = self._explain(rec, a, script)
+                script = self._explain(rec, a, script, feedback=feedback)
                 if sha256_hex(script.encode()) in seen:
                     self._save(rec, status="no_safe_variant", error="the safer variant repeats an earlier script")
                     break
@@ -310,7 +383,7 @@ class Orchestrator:
             self._save(rec, status="blocked_goal", error="the input filter flagged the goal: "
                                                          + (", ".join(v.categories) or "unsafe"))
             return None
-        plan = self.planner.plan(rec["goal"], rec["scope"], self.s.target_desc)
+        plan = self.planner.plan(rec["goal"], rec["scope"], self.s.target_desc, files=sorted(rec.get("files") or {}))
         script = plan["script"]
         self._save(rec, script_text=script, plan={"rationale": plan["rationale"], "expected": plan["expected"]})
         self._emit(rid, "plan", {"rationale": plan["rationale"], "script_sha256": sha256_hex(script.encode())})
@@ -333,7 +406,12 @@ class Orchestrator:
             self.sleep(min(15.0, left))
 
     def _files(self, rec: dict) -> dict[str, bytes]:
-        return {k: self.store.read_file(rec["id"], f"file-{k}") for k in rec.get("files") or {}}
+        """The companion files, re-hashed against the hashes recorded at create(): never sent changed."""
+        files = {k: self.store.read_file(rec["id"], f"file-{k}") for k in rec.get("files") or {}}
+        changed = sorted(k for k, v in files.items() if sha256_hex(v) != rec["files"][k])
+        if changed:
+            raise FilesChanged("companion files changed since the rehearsal was created: " + ", ".join(changed))
+        return files
 
     def _rehearse_once(self, rec: dict, n: int, kind: str, script: str) -> dict:
         rid = rec["id"]
@@ -417,7 +495,21 @@ class Orchestrator:
         self._emit(rid, "twin_summary", {"n": n, "verdict": a["verdict"]})
         return a
 
-    def _explain(self, rec: dict, a: dict, script: str) -> str:
+    def _goal_check(self, rec: dict, a: dict, task_effects: set, effects: set) -> str | None:
+        """Goal preserved: an acceptable safer attempt that shares none of the original's in-scope
+        effects is marked no_effect and is not approvable. Returns the reason for the next explain."""
+        if not a["acceptable"]:
+            return None
+        found = goal.check(task_effects, effects)
+        if found is None:
+            return None
+        a.update(acceptable=False, status="no_effect", goal_check=found)
+        self._save(rec)
+        self._emit(rec["id"], "no_effect", {"n": a["n"], **found})
+        self._emit_view(rec)
+        return found["reason"]
+
+    def _explain(self, rec: dict, a: dict, script: str, feedback: str | None = None) -> str:
         rid, n = rec["id"], a["n"]
         self._save(rec, status="reviewing")
         self._emit(rid, "step", {"step": "review"})
@@ -435,7 +527,9 @@ class Orchestrator:
             except Exception as e:  # informational filter: a failed check is recorded, never read as safe
                 a["data_check_error"] = _err(e)
                 self._emit(rid, "error", {"message": f"input filter on ledger data failed: {_err(e)}"})
-        ex = self.planner.explain(ledger, rec["scope"], script)
+        # Companion files sit in the script's working directory; the model is told their names.
+        ex = self.planner.explain(ledger, rec["scope"], script, files=sorted(rec.get("files") or {}),
+                                  rejected=feedback)
         self.store.write_json(rid, f"explain-{n}.json", ex)
         a["explain"] = {"summary": ex["summary"], "why_safer": ex["why_safer"],
                         "safer_script_sha256": sha256_hex(ex["safer_script"].encode())}
@@ -469,8 +563,10 @@ class Orchestrator:
         version, manifest, uptime = self._probe_prod(rec, "probe")
         self.store.write_json(rid, "prod-state-rehearsal.json", manifest)
         twin_manifest = self.store.read_json(rid, f"twin-state-{a['n']}.json")
+        files = self._files(rec)
         approval = {"ledger_sha256": a["ledger_sha256"], "script_sha256": a["script_sha256"],
-                    "snapshot_id": rec["snapshot_id"], "prod_state_version": version}
+                    "snapshot_id": rec["snapshot_id"], "prod_state_version": version,
+                    "files_sha256": files_digest({k: sha256_hex(v) for k, v in files.items()})}
         drift = remote.manifest_changes(twin_manifest, manifest)
         self._save(rec, approvable=a["n"], approval=approval, prod_uptime_s=uptime,
                    snapshot_matches_prod=a.get("twin_state_version") == version, snapshot_drift=drift)
@@ -491,9 +587,15 @@ class Orchestrator:
                 raise Conflict([f"rehearsal is {rec.get('status')}, not awaiting approval"])
             if self._prod_owner:
                 raise Busy(f"production is busy ({'restore' if self._prod_owner == 'restore' else 'apply'})")
-            appr = rec["approval"]
-            reasons = [f"{k} does not match the rehearsal" for k in APPROVAL_FIELDS
-                       if not isinstance(req.get(k), str) or req.get(k) != appr[k]]
+            # Records from before files_sha256 existed: the hashes recorded at create() stand in.
+            appr = {"files_sha256": files_digest(rec.get("files") or {}), **rec["approval"]}
+            reasons = []
+            for k in APPROVAL_FIELDS:
+                given = req.get(k)
+                if k == "files_sha256" and given is None and not rec.get("files"):
+                    continue  # no companion files: a client that does not send the field binds nothing less
+                if not isinstance(given, str) or given != appr[k]:
+                    reasons.append(f"{k} does not match the rehearsal")
             if rec["snapshot_id"] != self.s.snapshot_id:
                 reasons.append("snapshot_id: the golden snapshot changed since the rehearsal")
             n = rec["approvable"]
@@ -502,9 +604,22 @@ class Orchestrator:
                 reasons.append("ledger_sha256: the stored ledger no longer gives the approved hash")
             if sha256_hex(self.store.read_file(rid, f"attempt-{n}.sh")) != appr["script_sha256"]:
                 reasons.append("script_sha256: the stored script no longer gives the approved hash")
+            try:
+                stored = {k: sha256_hex(v) for k, v in self._files(rec).items()}
+            except (FilesChanged, OSError, UnknownRehearsal) as e:
+                stored = None
+                reasons.append(f"files_sha256: {e}")
+            if stored is not None and files_digest(stored) != appr["files_sha256"]:
+                reasons.append("files_sha256: the stored companion files no longer give the approved hash")
+            drift = rec.get("snapshot_drift") or []
+            override = req.get("override_drift") is True
+            if drift and not override:
+                reasons.append(f"snapshot_drift: the twin did not start from production's current data "
+                               f"({len(drift)} changes); approve with override_drift: true to accept that")
             if reasons:
                 self._emit(rid, "approval_refused", {"reasons": reasons})
                 raise Conflict(reasons)
+            self._take_prod_flock(rid)  # Busy when another control process has production
             self._prod_owner = rid
         try:
             if not self._prod_lock.acquire(timeout=10):
@@ -520,14 +635,15 @@ class Orchestrator:
                 self._emit(rid, "approval_refused", {"reasons": reasons})
                 raise Conflict(reasons)
             rec = self.store.load(rid)
-            self._save(rec, approved={**{k: req[k] for k in APPROVAL_FIELDS}, "approved_at": utc_now()},
+            approved = {k: appr[k] for k in APPROVAL_FIELDS}  # every field equals the request, checked above
+            if drift:
+                approved.update(override_drift=True, snapshot_drift=drift)
+            self._save(rec, approved={**approved, "approved_at": utc_now()},
                        apply={"status": "applying"}, status="applying")
-            self._emit(rid, "approved", {k: req[k] for k in APPROVAL_FIELDS})
+            self._emit(rid, "approved", approved)
             return rec
         except BaseException:
-            with self._lock:
-                if self._prod_owner == rid:
-                    self._prod_owner = None
+            self._release_prod(rid)
             raise
 
     def apply(self, rid: str) -> dict:
@@ -541,12 +657,16 @@ class Orchestrator:
             script = self.store.read_file(rid, f"attempt-{n}.sh")
             if sha256_hex(script) != rec["approved"]["script_sha256"]:
                 raise RuntimeError("stored script does not match the approved hash")
+            files = self._files(rec)  # exactly these bytes go to production and into the receipt
+            sent = {k: sha256_hex(v) for k, v in sorted(files.items())}
+            if files_digest(sent) != rec["approved"].get("files_sha256", files_digest(rec.get("files") or {})):
+                raise FilesChanged("companion files do not match the approved files_sha256")
             self._emit(rid, "step", {"step": "apply"})
             self._prod_lock.acquire()
             try:
                 prod = self._prod()
                 result = remote.trace(
-                    prod, f"{rid}-apply", script, rec["scope"], self._files(rec), wall_s=self.s.wall_s,
+                    prod, f"{rid}-apply", script, rec["scope"], files, wall_s=self.s.wall_s,
                     mem=self.s.mem, pids=self.s.pids,
                     on_phase=lambda ph, info: self._emit(rid, "trace", {"where": "prod", "phase": ph, **info}),
                     expect_version=rec["approved"]["prod_state_version"],
@@ -566,22 +686,36 @@ class Orchestrator:
             twin_ledger = self.store.read_json(rid, f"ledger-{n}.json")
             cmp = ledger_compare(twin_ledger, prod_ledger)
             self.store.write_json(rid, "compare.json", cmp)
+            # Production's verdict comes from this machine, never from the ledger's own summary.
+            prod_summary = finalize(prod_ledger, rec["scope"])["summary"]
+            divergence = divergence_reasons(problems, prod_summary, cmp)
             rec["apply"] = {"status": "done", "prod_ledger_sha256": prod_ledger.get("ledger_sha256"),
                             "verify": {"ok": not problems, "problems": problems},
                             "prod_before_state_version": result["state_version"],
-                            "match": cmp["match"], "counts": cmp["counts"]}
+                            "match": cmp["match"], "counts": cmp["counts"],
+                            "compare_basis": cmp.get("compare_basis", "counts"),
+                            "prod_verdict": prod_summary["verdict"],
+                            "prod_out_of_scope_total": prod_summary["out_of_scope_total"],
+                            "outcome": "diverged" if divergence else "applied", "divergence": divergence}
             self._save(rec)
             self._emit_view(rec)  # the screen has the comparison before the compare step lands
             self._emit(rid, "prod_counters", effect_counts(prod_ledger))
-            self._emit(rid, "compare", {"match": cmp["match"], "counts": cmp["counts"]})
+            self._emit(rid, "compare", {"match": cmp["match"], "counts": cmp["counts"],
+                                        "prod_verdict": prod_summary["verdict"],
+                                        "outcome": rec["apply"]["outcome"]})
             self._emit(rid, "step", {"step": "compare"})
             self._collect_llm(rec, llm_mark)
-            receipt = self._receipt(rec, twin_ledger, prod_ledger, cmp, script)
+            receipt = self._receipt(rec, twin_ledger, prod_ledger, cmp, script, sent)
             self.store.write_json(rid, "receipt.json", receipt)
             sig = receipt.get("signature") or {}
             self._save(rec, receipt={"key_id": sig.get("key_id"), "signed": bool(sig),
                                      "sha256": sha256_hex(self.store.read_file(rid, "receipt.json"))},
-                       status="applied")
+                       status=rec["apply"]["outcome"],
+                       error=("production diverged from the rehearsal: " + "; ".join(divergence))
+                       if divergence else None)
+            if divergence:
+                self._emit(rid, "diverged", {"reasons": divergence, "prod_verdict": prod_summary["verdict"],
+                                             "match": cmp["match"]})
             self._emit(rid, "receipt", {"key_id": sig.get("key_id"), "signed": bool(sig)})
         except Exception as e:
             rec = self._reload(rec)
@@ -590,9 +724,7 @@ class Orchestrator:
             self._emit(rid, "error", {"message": _err(e)})
         finally:
             rec = self._reload(rec)
-            with self._lock:
-                if self._prod_owner == rid:
-                    self._prod_owner = None
+            self._release_prod(rid)
             self._emit_view(rec)
             self._emit(rid, "done", {"status": rec["status"]})
         return rec
@@ -601,7 +733,8 @@ class Orchestrator:
         self.approve(rid, req)
         return self.apply(rid)
 
-    def _receipt(self, rec: dict, twin_ledger: dict, prod_ledger: dict, cmp: dict, script: bytes) -> dict:
+    def _receipt(self, rec: dict, twin_ledger: dict, prod_ledger: dict, cmp: dict, script: bytes,
+                 files_sent: dict[str, str]) -> dict:
         from rt.receipts.sign import canonical
         limits = prod_ledger.get("limits") or {}
         body = {
@@ -611,11 +744,14 @@ class Orchestrator:
             "issued_at": utc_now(),
             "source": rec["source"],
             "preset": rec.get("preset"),
-            "script": {"name": rec["name"], "sha256": sha256_hex(script), "files": rec.get("files") or {}},
+            "script": {"name": rec["name"], "sha256": sha256_hex(script), "files": files_sent,
+                       "files_sha256": files_digest(files_sent)},
             "scope": rec["scope"],
             "snapshot_id": rec["snapshot_id"],
             "prod_instance_id": rec["prod_instance_id"],
             "approval": rec["approved"],
+            "snapshot_drift": {"changes": rec.get("snapshot_drift") or [],
+                               "overridden": bool(rec["approved"].get("override_drift"))},
             "attempts": [{"n": a["n"], "kind": a["kind"], "twin_id": a["twin"].get("id"),
                           "twin_label": a["twin"].get("label"), "twin_destroyed": a["twin"].get("destroyed"),
                           "ledger_sha256": a.get("ledger_sha256"), "verdict": a.get("verdict"),
@@ -626,11 +762,19 @@ class Orchestrator:
             "prod_ledger_sha256": ledger_sha256(prod_ledger),
             "prod_ledger_verified_on_control": bool(rec["apply"]["verify"]["ok"]),
             "prod_before_state_version": rec["apply"]["prod_before_state_version"],
+            # The outcome a reader must not miss: "applied" only when production did exactly what
+            # was rehearsed and stayed in scope by this machine's own check.
+            "outcome": rec["apply"]["outcome"],
+            "divergence": rec["apply"]["divergence"],
+            "prod_verdict": {"verdict": rec["apply"]["prod_verdict"],
+                             "out_of_scope_total": rec["apply"]["prod_out_of_scope_total"],
+                             "computed_on": "control"},
             "result": {"exit": prod_ledger.get("exit"), "effects": effect_counts(prod_ledger),
                        "limits": {k: limits.get(k) for k in ("oom", "wall_exceeded", "pids_limit_hit",
                                                              "wall_max_s", "mem_max_mb", "pids_max")
                                   if k in limits}},
             "compare": {"match": cmp["match"], "counts": cmp["counts"], "surprises": len(cmp["surprises"]),
+                        "compare_basis": cmp.get("compare_basis", "counts"),
                         "compare_sha256": sha256_hex(canonical(cmp))},
             "models": [{k: c.get(k) for k in ("purpose", "model_requested", "model_returned", "tokens_in",
                                               "tokens_out", "outcome")} for c in rec.get("llm_calls") or []],
@@ -737,6 +881,12 @@ class Orchestrator:
                 busy = self.open_rehearsals()
                 if busy:
                     return {"status": "skipped", "reason": "rehearsals are open", "open": busy}
+            try:
+                self._take_prod_flock("restore")
+            except Busy as e:
+                if only_if_idle:
+                    return {"status": "skipped", "reason": str(e)}
+                raise
             self._prod_owner = "restore"
         return None
 
@@ -760,9 +910,7 @@ class Orchestrator:
             self._set_prod_status(status="error", error=_err(e))
             raise
         finally:
-            with self._lock:
-                if self._prod_owner == "restore":
-                    self._prod_owner = None
+            self._release_prod("restore")
 
     def _rebase_after_restore(self) -> dict:
         """Re-read production's state version for every rehearsal awaiting approval.
@@ -812,9 +960,11 @@ class Orchestrator:
         records = [self.store.load(r) for r in self.store.ids()]
         applied = [r for r in records if (r.get("apply") or {}).get("status") == "done"]
         matched = [r for r in applied if r["apply"].get("match")]
+        diverged = [r for r in records if r.get("status") == "diverged"]
         twins = sum(1 for i in self.instances() if i["dot"] == "blue")
         q = self.queue_state()
         return {"twins_alive": twins, "runs": len(records), "applied": len(applied), "matched": len(matched),
+                "diverged": len(diverged),
                 "match_rate": round(len(matched) / len(applied), 4) if applied else None,
                 "queue": {"running": len(q["running"]), "waiting": len(q["waiting"]), "cap": q["cap"]},
                 "statuses": {s: sum(1 for r in records if r.get("status") == s)

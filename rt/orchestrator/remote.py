@@ -152,8 +152,9 @@ def trace(m: Machine, run: str, script: bytes, scope: dict, files: dict[str, byt
     if expect_version is not None and version != expect_version:
         raise StateShift(expect_version, version, manifest_changes(expect_manifest or {}, manifest))
 
+    # --scope: the sandbox makes only the scope's paths and the tracked roots writable.
     rc, _, err = m.exec(["sh", "-c", f'cd "$1" && {RT_BIN} run --script "$1/script.sh" --wall "$2" --mem "$3" '
-                         f'--pids "$4" > run.json', "sh", w, str(wall_s), mem, str(pids)],
+                         f'--pids "$4" --scope scope.json > run.json', "sh", w, str(wall_s), mem, str(pids)],
                         timeout=wall_s + 120)
     _check("run", rc, err)
     note("run", {})

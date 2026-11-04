@@ -191,3 +191,53 @@ def test_on_call_sink_gets_records_without_content(fake, sleeps):
     assert set(rec) == RECORD_KEYS
     dumped = json.dumps(rec)
     assert "answer text" not in dumped and "prompt text" not in dumped
+
+
+# --- secrets nobody registered, masked by shape (review finding 7) ----------------------------
+
+def test_masker_hides_unregistered_secrets_by_shape():
+    m = Masker(env={})
+    key = secrets.token_hex(20)
+    text = ("PGPASSWORD=hunter2" "isbad psql shop\n"
+            "ALTER ROLE app PASSWORD 'S3cr3t!pass';\n"
+            "curl https://admin:pa55" "w0rd@api.example.com/hook?token=abcdef123&page=2\n"
+            "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln\n"
+            f'{{"api_key": "sk_' f'live_51Hx9aZQ2bLm8Pp0qRsTuVwXy"}} sig {key}\n')
+    out = m.mask(text)
+    for leaked in ("hunter2" "isbad", "S3cr3t!pass", "pa55w0rd", "abcdef123", "eyJhbGciOiJIUzI1NiJ9",
+                   "sk_" "live_51Hx9aZQ2bLm8Pp0qRsTuVwXy", key):
+        assert leaked not in out, leaked
+    assert "PGPASSWORD=<secret:kv.PGPASSWORD>" in out
+    assert "PASSWORD '<secret:sql-password>'" in out
+    assert "https://admin:<secret:url-password>@api.example.com" in out and "page=2" in out
+    assert "<secret:bearer-token>" in out and "<secret:high-entropy>" in out
+
+
+def test_masker_keeps_scripts_paths_identifiers_and_variable_references():
+    m = Masker(env={})
+    text = ("set -euo pipefail\nrm -rf -- /srv/app/tmp/cache/* /srv/app/releases/2026.10.01/config.yml\n"
+            "psql shop -c \"DELETE FROM sessions WHERE (expires_at < now())\"\n"
+            "PGPASSWORD=$PGPASSWORD psql; ALTER TABLE t ADD PRIMARY KEY (id);\n"
+            "label build_2026_11_04_release_candidate SessionTimeoutMillisecondsDefault "
+            "3f394906-52dc-4e1a-9b2c-0123456789ab\n")
+    assert m.mask(text) == text
+
+
+def test_mask_obj_keeps_digests_under_hash_fields_but_masks_sql():
+    import hashlib
+    m = Masker(env={})
+    h = hashlib.sha256(b"x").hexdigest()
+    led = {"ledger_sha256": h, "rows": {"s": {"digests": {"deleted": h}}}, "file_hashes": {"/srv/a": h},
+           "prod_state_version": h, "sql": [{"statement": "ALTER ROLE r PASSWORD 'p4ss-word'"}], "note": h}
+    out = m.mask_obj(led)
+    assert out["ledger_sha256"] == h and out["rows"]["s"]["digests"]["deleted"] == h
+    assert out["file_hashes"]["/srv/a"] == h and out["prod_state_version"] == h
+    assert out["sql"][0]["statement"] == "ALTER ROLE r PASSWORD '<secret:sql-password>'"
+    assert out["note"] == "<secret:high-entropy>"  # a bare hex string outside a hash field is masked
+
+
+def test_masker_catches_most_random_tokens():
+    m = Masker(env={})
+    toks = [secrets.token_urlsafe(24) for _ in range(300)] + [secrets.token_hex(16) for _ in range(300)]
+    missed = sum(1 for t in toks if t in m.mask(f"v {t}"))
+    assert missed <= 15, missed  # a token split by - or _ into short words can slip; the rest is masked

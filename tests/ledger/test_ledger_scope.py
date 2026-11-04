@@ -99,6 +99,27 @@ def test_safe_variant_is_in_scope():
     assert summary["verdict"] == "in_scope"
 
 
+def test_modified_directory_outside_scope_is_out_of_scope():
+    # The tracer lists a directory whose mode, owner or group changed under dirs.modified.
+    facts = cleanup_facts()
+    facts["dirs"]["modified"] = ["/srv/app/uploads"]
+    out, summary = scope_check(facts, CLEANUP_SCOPE)
+    hit = [e for e in out if e["op"] == "dir_modified"]
+    assert [(e["kind"], e["item"]) for e in hit] == [("path", "/srv/app/uploads")]
+    assert "not under declared paths" in hit[0]["reason"]
+    assert summary["verdict"] == "out_of_scope"
+
+
+def test_modified_directory_inside_scope_is_in_scope():
+    facts = {"files": {"created": [], "modified": [], "deleted": []},
+             "dirs": {"created": [], "modified": ["/srv/app/tmp/cache", "/srv/app/tmp"], "deleted": []},
+             "rows": {}, "egress": [], "dns": [], "canaries": [], "exit": 0}
+    out, summary = scope_check(facts, CLEANUP_SCOPE)
+    assert out == [] and summary["verdict"] == "in_scope"
+    sealed = finalize(facts, CLEANUP_SCOPE)
+    assert sealed["dirs"]["modified"] == ["/srv/app/tmp/cache", "/srv/app/tmp"] and verify(sealed, CLEANUP_SCOPE) == []
+
+
 def test_rows_budget():
     facts = {"rows": {"prices": {"inserted": 0, "deleted": 0, "updated": 31}}}
     scope = {"tables": {"prices": {"max_rows": 31}}}

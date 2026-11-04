@@ -21,7 +21,7 @@ import posixpath
 from .canonical import ledger_sha256, seal
 
 FILE_OPS = ("created", "modified", "deleted")
-DIR_OPS = ("created", "deleted")
+DIR_OPS = ("created", "modified", "deleted")  # modified: mode, owner or group changed
 DDL_FLAGS = ("dropped", "created", "schema_changed")
 RESERVED_KEYS = ("scope", "out_of_scope", "summary", "ledger_sha256")
 

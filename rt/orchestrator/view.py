@@ -16,8 +16,9 @@ from rt.ledger.scope import DIR_OPS, FILE_OPS, _egress_op, norm_table, path_in_s
 STEPS = ["rehearse", "review", "apply", "compare"]
 MAX_PATH_ROWS = 4
 TWIN_SUBTITLE = "Vultr VM from snapshot · VPC-only · no keys"
-OP_SIGN = {"deleted": "-", "created": "+", "modified": "~", "dir_deleted": "-", "dir_created": "+"}
-OP_ORDER = ("deleted", "created", "modified", "dir_deleted", "dir_created")
+OP_SIGN = {"deleted": "-", "created": "+", "modified": "~", "dir_deleted": "-", "dir_created": "+",
+           "dir_modified": "~"}
+OP_ORDER = ("deleted", "created", "modified", "dir_deleted", "dir_created", "dir_modified")
 
 
 def _plural(n: int, word: str) -> str:
@@ -260,9 +261,13 @@ def effect_counts(ledger: dict | None) -> dict:
             "egress_attempts": int(s.get("egress_attempts") or 0)}
 
 
-def compare_view(cmp: dict, twin_ledger: dict, prod_ledger: dict) -> dict:
+def compare_view(cmp: dict, twin_ledger: dict, prod_ledger: dict, apply: dict | None = None) -> dict:
+    apply = apply or {}
     return {"predicted": effect_counts(twin_ledger), "happened": effect_counts(prod_ledger),
             "match": bool(cmp.get("match")), "counts": cmp.get("counts") or {},
+            "compare_basis": cmp.get("compare_basis", "counts"),
+            "prod_verdict": apply.get("prod_verdict"), "outcome": apply.get("outcome"),
+            "divergence": apply.get("divergence") or [],
             "surprises": (cmp.get("surprises") or [])[:50]}
 
 
@@ -283,6 +288,13 @@ def timeline(events: list[dict]) -> list[dict]:
         out.append({"delay_ms": _ms_between(prev, ev["ts"]) if prev else 0, "type": ev["type"], "data": ev["data"]})
         prev = ev["ts"]
     return out
+
+
+def attempt_status_text(a: dict) -> str:
+    """One line per attempt; no_effect (in scope, exit 0, none of the task's effects) says why."""
+    if a.get("status") == "no_effect":
+        return "no effect: " + ((a.get("goal_check") or {}).get("reason") or "did nothing the task needs")
+    return str(a.get("status") or "")
 
 
 def instances_view(record: dict) -> list[dict]:
@@ -323,13 +335,18 @@ def screen_view(record: dict, *, presets: list[str], ledger: dict | None, prod_l
         "ledger_view": rows,
         "summary": screen_summary(ledger, rows) if ledger else screen_summary({}, []),
         "attempts": [{k: a.get(k) for k in ("n", "kind", "status", "verdict", "ledger_sha256", "script_sha256",
-                                             "out_of_scope_total", "error")} | {"twin": (a.get("twin") or {}).get("label")}
+                                             "out_of_scope_total", "error")}
+                     | {"twin": (a.get("twin") or {}).get("label"), "status_text": attempt_status_text(a)}
                      for a in attempts],
         "instances": instances_view(record),
         "approval": record.get("approval") if record.get("status") == "awaiting_approval" else None,
         "prod_counters": effect_counts(prod_ledger) if prod_ledger else {"files_changed": 0, "rows_changed": 0,
                                                                          "egress_attempts": 0},
-        "compare": compare_view(compare, ledger or {}, prod_ledger or {}) if compare and prod_ledger else None,
+        "compare": compare_view(compare, ledger or {}, prod_ledger or {}, record.get("apply"))
+        if compare and prod_ledger else None,
+        # "applied" or "diverged" once production ran; the screen draws "diverged" in red.
+        "outcome": (record.get("apply") or {}).get("outcome"),
+        "divergence": (record.get("apply") or {}).get("divergence") or [],
         "receipt_url": f"/api/rehearsals/{record['id']}/receipt" if record.get("receipt") else None,
         "view_key": f"{record['id']}:{(shown or {}).get('n') or 0}",
         "timeline": timeline(events or []),

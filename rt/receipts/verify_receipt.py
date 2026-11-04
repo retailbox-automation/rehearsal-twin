@@ -6,6 +6,13 @@ Checks the ed25519 signature over the receipt; with --pubkey (base64, hex or a
 PEM file path) also that the receipt was signed by that key; with ledgers, that
 their canonical sha256 matches the hashes the receipt names. Prints OK or the
 problems; exit 0 when everything holds, 1 otherwise.
+
+Without --pubkey the signature is only checked against the key embedded in the
+receipt itself, which anyone can replace: that proves nothing about who signed.
+It prints "signer NOT checked" and exits 2 (NO_SIGNER).
+
+The receipt's `outcome` is printed too: "diverged" means production did not do
+what was rehearsed (a valid signature on such a receipt is not a success).
 """
 from __future__ import annotations
 
@@ -16,6 +23,8 @@ import sys
 
 from rt.ledger.canonical import ledger_sha256
 from rt.receipts.sign import ReceiptError, load_public, verify_receipt
+
+NO_SIGNER = 2
 
 
 def _load(path: str):
@@ -48,7 +57,8 @@ def main(argv: list[str] | None = None) -> int:
                 with open(text, encoding="utf-8") as f:
                     text = f.read()
             pub = load_public(text)
-        problems = check(_load(args.receipt), pub,
+        receipt = _load(args.receipt)
+        problems = check(receipt, pub,
                          _load(args.twin_ledger) if args.twin_ledger else None,
                          _load(args.prod_ledger) if args.prod_ledger else None)
     except (OSError, json.JSONDecodeError, ReceiptError, ValueError) as e:
@@ -58,7 +68,14 @@ def main(argv: list[str] | None = None) -> int:
         for p in problems:
             print(f"FAIL  {p}")
         return 1
-    print("OK  signature valid" + (", ledgers match" if args.twin_ledger or args.prod_ledger else ""))
+    ledgers = ", ledgers match" if args.twin_ledger or args.prod_ledger else ""
+    outcome = receipt.get("outcome") if isinstance(receipt, dict) else None
+    tail = f"; outcome {outcome}" if outcome else ""
+    if pub is None:
+        print("UNVERIFIED  signature matches the key embedded in the receipt, but the signer NOT checked "
+              f"(anyone can embed a key; pass --pubkey){ledgers}{tail}")
+        return NO_SIGNER
+    print(f"OK  signature valid, signed by the given key{ledgers}{tail}")
     return 0
 
 

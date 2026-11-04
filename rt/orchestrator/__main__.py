@@ -2,7 +2,7 @@
 
 Live: reads the same environment as the API (see rt/orchestrator/settings.py). Events go to
 stdout as JSON lines; the record lives in RT_DATA_DIR, so the web screen shows CLI runs too.
-`approve` takes the four fields explicitly: it is the human step.
+`approve` takes the fields explicitly (files and drift override too): it is the human step.
 `reap` and `restore-tick` are the systemd timer jobs: one JSON line per tick on stdout.
 """
 from __future__ import annotations
@@ -39,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("id")
     for f in ("ledger-sha256", "script-sha256", "snapshot-id", "prod-state-version"):
         a.add_argument(f"--{f}", required=True)
+    a.add_argument("--files-sha256", help="required when the rehearsal has companion files")
+    a.add_argument("--override-drift", action="store_true",
+                   help="approve although the twin did not start from production's current data")
     rp = sub.add_parser("reap", help="one reaper tick: delete rt-twin older than the TTL unless a live lease holds it")
     rp.add_argument("--ttl", type=float, default=None, help="seconds (default RT_REAPER_TTL_S, 900)")
     rp.add_argument("--dry-run", action="store_true")
@@ -72,7 +75,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         else:
             req = {"ledger_sha256": args.ledger_sha256, "script_sha256": args.script_sha256,
-                   "snapshot_id": args.snapshot_id, "prod_state_version": args.prod_state_version}
+                   "snapshot_id": args.snapshot_id, "prod_state_version": args.prod_state_version,
+                   "files_sha256": args.files_sha256, "override_drift": args.override_drift}
             rec = orch.approve_and_apply(args.id, req)
         for ev in orch.store.events(rec["id"]):
             if ev["type"] != "view":

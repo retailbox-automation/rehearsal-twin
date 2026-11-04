@@ -104,13 +104,17 @@
     }
     const h = state.r.twin_ledger.ledger_sha256;
     let line = state.step && STEPS.indexOf(state.step) >= 1 ? `ledger sha256 ${short(h)}` : "";
+    const diverged = state.r.status === "diverged";
     if (state.compare) {
       const c = state.r.compare;
       line += c.match === false
         ? `   predicted \u2260 happened: ${c.surprises.length} surprises`
         : `   predicted = happened: ${c.happened.files_changed} files, ${c.happened.rows_changed} rows, ${c.happened.egress_attempts} egress`;
+      if (c.prod_verdict && c.prod_verdict !== "in_scope") line += `   PROD verdict: ${c.prod_verdict.replace(/_/g, " ")}`;
     }
+    if (diverged) line = `DIVERGED: PROD did not do what was rehearsed.   ${line.trim()}`;
     $("hash").textContent = line;
+    $("hash").classList.toggle("diverged", diverged);
   }
 
   function renderInstances() {
@@ -134,7 +138,9 @@
     const past = STEPS.indexOf(state.step) >= 2;
     $("approve").disabled = past;
     $("reject").disabled = past;
-    $("approve").textContent = past ? "Approved — applied to PROD" : "Approve safer variant";
+    $("approve").textContent = state.r.status === "diverged" ? "Applied — PROD DIVERGED"
+      : past ? "Approved — applied to PROD" : "Approve safer variant";
+    $("approve").classList.toggle("diverged", state.r.status === "diverged");
   }
 
   function render() {

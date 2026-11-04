@@ -10,7 +10,10 @@ Standard library only. Guards enforced here, for every call:
 - No secret values in a request: every string in the body is checked against
   secret-like environment values, explicitly registered secrets and canary
   tokens (rt-canary-...) before anything is sent. Callers mask text with
-  `client.masker` first; the check is the backstop.
+  `client.masker` first; the check is the backstop. The masker also hides
+  secrets it was never told about, by their shape (SQL password literals,
+  user:password@ in URLs, key=value with a secret-like name, bearer tokens,
+  long high-entropy strings); the backstop checks known values only.
 - Retries follow the Vultr Inference docs (concepts/errors, concepts/limits):
   429 after Retry-After, 502/503/504 and network errors with a growing wait,
   500 once. Other statuses fail at once.
@@ -21,6 +24,7 @@ wall time, attempts, outcome. Never prompt or answer text.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -50,6 +54,51 @@ CANARY_PREFIX = "rt-canary-"
 CANARY = re.compile(r"rt-canary-[^\s\"'`<>,;()\[\]{}]*", re.I)
 PEM_BLOCK = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)", re.S)
 PEM_MARK = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
+
+# Secrets nobody registered, found by shape. Each keeps its surroundings and replaces only the value.
+_SECRET_WORD = r"(?:KEY|TOKEN|SECRET|PASS|PWD|CREDENTIAL|AUTH|PRIVATE|DSN|DATABASE_URL|SESSION|COOKIE|SIGNATURE|SIG)"
+SQL_PASSWORD = re.compile(r"(?i)\b(PASSWORD|IDENTIFIED\s+BY)(\s+)(E?'(?:[^']|'')*'|\"[^\"]*\"|\$\$.*?\$\$)", re.S)
+URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)([^/\s:@<>]+):([^@\s/<>]+)@")
+BEARER = re.compile(r"(?i)\b(Bearer|Basic|Token)(\s+)([A-Za-z0-9._~+/\-]{8,}=*)")
+KEY_VALUE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.\-<:])(?P<name>[A-Za-z0-9_.\-]*" + _SECRET_WORD + r"[A-Za-z0-9_.\-]*)(?P<q>[\"']?)(?P<sep>\s*(?::|=|:=|=>)\s*)"
+    r"(?P<val>\"[^\"\n]*\"|'[^'\n]*'|[^\s&;,\"'`)}\]<>]+)")
+HIGH_ENTROPY = re.compile(r"(?<![A-Za-z0-9+_=\-])[A-Za-z0-9+_=\-]{24,}(?![A-Za-z0-9+_=\-])")
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+HEX = re.compile(r"[0-9a-f]+", re.I)
+HASH_FIELD = re.compile(r"sha256|sha1|digest|hash|_version$|^version$|fingerprint", re.I)
+MIN_ENTROPY_BITS = 3.6
+
+
+def _entropy(text: str) -> float:
+    n = len(text)
+    counts: dict[str, int] = {}
+    for ch in text:
+        counts[ch] = counts.get(ch, 0) + 1
+    return -sum(c / n * math.log2(c / n) for c in counts.values())
+
+
+def _mixed(segment: str) -> bool:
+    """Letters and digits interleaved, or upper and lower case scattered: not a word or a number."""
+    if re.search(r"[A-Za-z]", segment) and re.search(r"[0-9]", segment):
+        return True
+    up, low = sum(c.isupper() for c in segment), sum(c.islower() for c in segment)
+    return up >= 0.3 * len(segment) and low >= 0.3 * len(segment)
+
+
+def looks_random(token: str) -> bool:
+    """A long token that reads like a key, not like an identifier, a date, a path piece or a UUID.
+
+    Identifiers are words and numbers joined by _ or - (build_2026_11_04_release); a key has a
+    long run where letters and digits (or cases) are mixed, and high character entropy."""
+    if len(token) < 24 or UUID.fullmatch(token):
+        return False
+    longest = max((len(seg) for seg in re.split(r"[_\-=+]", token) if _mixed(seg)), default=0)
+    if longest < 10:
+        return False
+    if HEX.fullmatch(token):  # hex keys: 16 symbols, lower entropy ceiling
+        return _entropy(token) >= 3.0
+    return _entropy(token) >= MIN_ENTROPY_BITS
 
 
 class InferenceError(Exception):
@@ -114,20 +163,25 @@ class Masker:
         self._values = sorted(by_value.items(), key=lambda kv: -len(kv[0]))
         self._canaries: dict[str, int] = {}
 
-    def mask(self, text: str) -> str:
+    def mask(self, text: str, *, shapes: bool = True) -> str:
         for value, name in self._values:
             if value in text:
                 text = text.replace(value, f"<secret:{name}>")
         text = PEM_BLOCK.sub("<secret:pem-private-key>", text)
-        return CANARY.sub(self._canary_slot, text)
+        text = CANARY.sub(self._canary_slot, text)
+        return mask_shapes(text) if shapes else text
 
-    def mask_obj(self, obj: Any) -> Any:
+    def mask_obj(self, obj: Any, _hash_field: bool = False) -> Any:
+        """mask() over every string; hex digests under hash-named fields (ledger_sha256, digests,
+        file_hashes, prod_state_version) stay readable: they identify, they do not unlock."""
         if isinstance(obj, str):
-            return self.mask(obj)
+            return self.mask(obj, shapes=not (_hash_field and HEX.fullmatch(obj) is not None))
         if isinstance(obj, dict):
-            return {self.mask(k) if isinstance(k, str) else k: self.mask_obj(v) for k, v in obj.items()}
+            return {self.mask(k) if isinstance(k, str) else k:
+                    self.mask_obj(v, _hash_field or (isinstance(k, str) and HASH_FIELD.search(k) is not None))
+                    for k, v in obj.items()}
         if isinstance(obj, (list, tuple)):
-            return [self.mask_obj(v) for v in obj]
+            return [self.mask_obj(v, _hash_field) for v in obj]
         return obj
 
     def leaks(self, text: str) -> list[str]:
@@ -142,6 +196,31 @@ class Masker:
     def _canary_slot(self, m: re.Match) -> str:
         n = self._canaries.setdefault(m.group(0), len(self._canaries) + 1)
         return f"<secret:canary-{n}>"
+
+
+def _is_placeholder_or_ref(value: str) -> bool:
+    v = value.strip("\"'")
+    return not v or v.startswith(("<secret:", "$", "%(", "{{")) or v in ("*", "***", "null", "None")
+
+
+def mask_shapes(text: str) -> str:
+    """Replace secrets found by their shape with <secret:...> placeholders."""
+    if not text:
+        return text
+    text = URL_CREDENTIALS.sub(lambda m: f"{m.group(1)}{m.group(2)}:<secret:url-password>@", text)
+    text = SQL_PASSWORD.sub(lambda m: f"{m.group(1)}{m.group(2)}'<secret:sql-password>'", text)
+    text = BEARER.sub(lambda m: m.group(0) if _is_placeholder_or_ref(m.group(3))
+                      else f"{m.group(1)}{m.group(2)}<secret:{m.group(1).lower()}-token>", text)
+
+    def kv(m: re.Match) -> str:
+        val = m.group("val")
+        if _is_placeholder_or_ref(val):
+            return m.group(0)
+        quote = val[0] if val[:1] in ("'", '"') and len(val) >= 2 and val[-1] == val[0] else ""
+        name = re.sub(r"[^A-Za-z0-9_.\-]", "", m.group("name"))[:40]
+        return f"{m.group('name')}{m.group('q')}{m.group('sep')}{quote}<secret:kv.{name}>{quote}"
+    text = KEY_VALUE.sub(kv, text)
+    return HIGH_ENTROPY.sub(lambda m: "<secret:high-entropy>" if looks_random(m.group(0)) else m.group(0), text)
 
 
 @dataclass(frozen=True)

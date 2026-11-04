@@ -6,8 +6,12 @@
     GET  /api/rehearsals/{id}                 screen view built from the real ledgers ({id} may be "latest")
     GET  /api/rehearsals/{id}/events          SSE: replays the feed, then follows it (?follow=0: replay only)
     GET  /api/rehearsals/{id}/ledgers         raw ledgers (twin attempts, production) and compare.json
-    POST /api/rehearsals/{id}/approve         {ledger_sha256, script_sha256, snapshot_id, prod_state_version}
+    POST /api/rehearsals/{id}/approve         {ledger_sha256, script_sha256, snapshot_id, prod_state_version,
+                                               files_sha256, override_drift?}
                                               -> 202, or 409 with the reasons when anything shifted
+                                              (the view's `approval` object is a complete request body;
+                                              files_sha256 may be left out when there are no companion
+                                              files; snapshot drift needs override_drift: true)
     GET  /api/rehearsals/{id}/receipt         signed receipt
     GET  /api/receipts/pubkey                 public key that signs receipts
     GET  /api/queue                           running and waiting rehearsals, cap, judge budget
@@ -50,6 +54,8 @@ class ApprovalIn(BaseModel):
     script_sha256: str
     snapshot_id: str
     prod_state_version: str
+    files_sha256: str | None = None  # required when the rehearsal has companion files (preset b)
+    override_drift: bool = False     # approve although the twin did not start from production's data
 
 
 class RestoreIn(BaseModel):

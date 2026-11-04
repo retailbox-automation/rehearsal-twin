@@ -43,7 +43,7 @@ LEDGER_A = {
 GOOD_EXPLAIN = {
     "summary": "The script deleted 60 files outside the cache and tried to call prod-api.internal.",
     "notes": [{"index": 0, "note": "CACHE_SUBDIR was empty"}, {"index": 1, "note": "the curl line"}],
-    "safer_script": "set -euo pipefail\n: \"${CACHE_SUBDIR:?}\"\nrm -rf -- /srv/app/tmp/cache/*\n",
+    "safer_script": "set -euo pipefail\nrm -rf -- /srv/app/tmp/cache/*\n",
     "why_safer": "Fails on an empty variable and drops the purge call.",
 }
 
@@ -199,3 +199,61 @@ def test_no_secret_values_in_prompts(fake, sleeps, monkeypatch):
     # llm_calls carry no content either
     calls = json.dumps(client.llm_calls)
     assert _leaked_names(calls.encode(), env) == [] and "rotate sessions" not in calls
+
+
+# --- the sandbox has no environment variables: the prompts must not ask for `:?` guards ----------
+
+@pytest.mark.parametrize("name", ["planner_system.md", "explain_system.md"])
+def test_prompt_asks_for_literals_not_required_variables(name):
+    from rt.agent.planner import load_prompt
+    text = load_prompt(name)
+    assert ":?}" not in text.replace('such as `: "${VAR:?}"` stops', "")  # only named as what breaks
+    assert "no environment variables" in text
+    assert ': "${VAR:=value}"' in text and "Do not introduce new variables" in text
+    assert "`shop`" in text and "set -euo pipefail" in text and "rm -rf --" in text
+    assert "check every variable" not in text and "check variables with" not in text
+
+
+def test_explain_masks_unregistered_secrets_in_sql_before_the_model(fake, client):
+    fake.reply(json.dumps(GOOD_EXPLAIN))
+    ledger = dict(LEDGER_A, sql=[{"statement": "ALTER ROLE shop PASSWORD 'Pr0dPassw0rd!'"},
+                                 {"statement": "UPDATE api_keys SET token = 'tok_" "live_9f8e7d6c5b4a'"}])
+    Planner(client).explain(ledger, SCOPE_A, "PGPASSWORD=hunter2" "isbad psql shop")
+    raw = json.dumps(fake.requests[0]["body"])
+    for leaked in ("Pr0dPassw0rd!", "tok_" "live_9f8e7d6c5b4a", "hunter2" "isbad"):
+        assert leaked not in raw, leaked
+    assert "<secret:sql-password>" in raw and "<secret:kv.token>" in raw
+
+
+# ---- companion files: in the script's working directory, read by relative name -------------
+
+def _system_and_user(fake, i=0):
+    msgs = fake.requests[i]["body"]["messages"]
+    return msgs[0]["content"], msgs[1]["content"]
+
+
+def test_plan_and_explain_say_companion_files_are_in_the_working_directory(fake, client):
+    # Live run 04.11: a safer script read /etc/app/schema_tables.txt, which does not exist; the
+    # file is copied next to the script. The model must be told where it is and how to name it.
+    fake.reply(json.dumps(GOOD_PLAN))
+    fake.reply(json.dumps(GOOD_EXPLAIN))
+    planner = Planner(client)
+    planner.plan("migrate", SCOPE_A, TARGET, files=["schema_tables.txt"])
+    planner.explain(LEDGER_A, SCOPE_A, "true", files=["schema_tables.txt"])
+    for i in (0, 1):
+        system, user = _system_and_user(fake, i)
+        block = user[user.index("<files>"):user.index("</files>")]
+        assert "current working directory" in block and "relative name" in block
+        assert "- schema_tables.txt" in block and "`schema_tables.txt`" in block
+        assert "current working directory" in system and "relative name" in system
+        assert "`/etc/app/schema_tables.txt`" in system  # the wrong form, named as wrong
+
+
+def test_no_files_block_without_companion_files(fake, client):
+    fake.reply(json.dumps(GOOD_PLAN))
+    fake.reply(json.dumps(GOOD_EXPLAIN))
+    planner = Planner(client)
+    planner.plan("clean", SCOPE_A, TARGET)
+    planner.explain(LEDGER_A, SCOPE_A, "true")
+    for i in (0, 1):
+        assert "<files>" not in _system_and_user(fake, i)[1]

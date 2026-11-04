@@ -1,7 +1,12 @@
 """Planner on muse-glimmer-30b with structured output (response_format json_schema).
 
-plan(goal, scope, target_desc) -> {script, rationale, expected{paths[], tables{}, hosts[]}}
-explain(ledger, scope, script=None) -> {summary, out_of_scope[], safer_script, why_safer}
+plan(goal, scope, target_desc, files=()) -> {script, rationale, expected{paths[], tables{}, hosts[]}}
+explain(ledger, scope, script=None, files=(), rejected=None) -> {summary, out_of_scope[], safer_script, why_safer}
+
+files: names of the companion files that are copied next to the script. The script runs with
+that directory as its working directory, so the model is told to read them by relative name.
+rejected: why the control machine rejected the script being explained although it stayed in
+scope (for example it did nothing the task needs); passed to the model in a <rejected> block.
 
 The model never decides what is in or out of scope: out_of_scope[] is copied from the
 ledger (the deterministic check in rt.ledger); the model may only attach a note to a row by
@@ -108,13 +113,13 @@ class Planner:
         self.reasoning_effort = reasoning_effort
 
     # -- public --------------------------------------------------------------
-    def plan(self, goal: str, scope: dict, target_desc: str) -> dict:
+    def plan(self, goal: str, scope: dict, target_desc: str, files=()) -> dict:
         m = self.client.masker
         user = (
             f"<goal>\n{m.mask(goal)}\n</goal>\n\n"
             f"<scope>\n{_dump(m.mask_obj(scope))}\n</scope>\n\n"
             f"<target>\n{m.mask(target_desc)}\n</target>"
-        )
+        ) + _files_block(files, m)
         obj = self._ask(load_prompt("planner_system.md"), user, "rehearsal_plan", PLAN_SCHEMA,
                         self._check_plan, "plan")
         exp = obj["expected"]
@@ -123,7 +128,8 @@ class Planner:
         return {"script": obj["script"], "rationale": obj["rationale"],
                 "expected": {"paths": list(exp["paths"]), "tables": tables, "hosts": list(exp["hosts"])}}
 
-    def explain(self, ledger: dict, scope: dict, script: str | None = None) -> dict:
+    def explain(self, ledger: dict, scope: dict, script: str | None = None, files=(),
+                rejected: str | None = None) -> dict:
         m = self.client.masker
         rows = list(ledger.get("out_of_scope") or [])
         shown = rows[:OUT_OF_SCOPE_CAP]
@@ -136,6 +142,11 @@ class Planner:
             parts.append(f"<script>\n{m.mask(script)}\n</script>")
         parts.append(f"<ledger>\n{_dump(_compact(m.mask_obj(body)))}\n</ledger>")
         parts.append(f"<out_of_scope>\n{numbered or '(none)'}\n</out_of_scope>")
+        block = _files_block(files, m)
+        if block:
+            parts.append(block.strip("\n"))
+        if rejected:
+            parts.append(f"<rejected>\n{m.mask(rejected)}\n</rejected>")
         obj = self._ask(load_prompt("explain_system.md"), "\n\n".join(parts), "rehearsal_explain",
                         EXPLAIN_SCHEMA, self._check_explain, "explain")
         notes: dict[int, str] = {}
@@ -267,6 +278,17 @@ def _compact(obj: Any) -> Any:
             head.append(f"... {len(obj) - LIST_CAP} more")
         return head
     return obj
+
+
+def _files_block(files, masker) -> str:
+    """The <files> block: companion files in the script's working directory, by relative name."""
+    names = sorted({str(n) for n in files or ()})
+    if not names:
+        return ""
+    listed = "\n".join(f"- {masker.mask(n)}" for n in names)
+    return ("\n\n<files>\nThese companion files are in the script's current working directory. "
+            f"Read them by their relative name, for example `{masker.mask(names[0])}`, "
+            "not by an absolute path such as /etc/app/...:\n" + listed + "\n</files>")
 
 
 def _dump(obj: Any) -> str:

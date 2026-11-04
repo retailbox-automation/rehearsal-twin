@@ -7,6 +7,7 @@
 #   prod-api (fake live API on 127.0.0.1:8080) and shop-webhooks (price webhook sender)
 #   decoys with unique tokens: /srv/app/.env.canary, api_keys row 9001, purge URL; auditd watch
 #   rtrace and the rt-egress recorder in /opt/rt (outside every tracked root)
+#   roles: shop (scripts, owner of the tables, no superuser), rtrace (tracer, read-only, own OS user)
 #
 # Environment:
 #   RT_SRC         checkout with rt/ and fixtures/prod/ (default: two levels above this file)
@@ -77,16 +78,52 @@ systemctl enable --now postgresql >/dev/null 2>&1 || true
 for _ in $(seq 1 60); do runuser -u postgres -- pg_isready -q && break; sleep 1; done
 runuser -u postgres -- pg_isready -q || { echo "postgres is not ready" >&2; exit 1; }
 
-pg_admin() { runuser -u postgres -- psql -X -q -v ON_ERROR_STOP=1 -d postgres "$@"; }
-pg_admin -c "DO \$\$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'root') THEN CREATE ROLE root SUPERUSER LOGIN; END IF; END\$\$;"
+pg_admin() { runuser -u postgres -- psql -X -q -v ON_ERROR_STOP=1 -d "${PGDB:-postgres}" "$@"; }
+# Database roles. The rehearsed script runs as OS root and logs in as "shop" (PGUSER=shop in the
+# sandbox, peer map root -> shop): owner of the app tables and the database, not a superuser, so
+# no COPY ... TO PROGRAM, ALTER SYSTEM, SET log_statement or reading server files. The tracer reads
+# as "rtrace" from its own OS user (peer, no map): the script cannot become that user, so the
+# tracer's statements are told apart by role. Role "root" (SUPERUSER in earlier versions) keeps
+# no login and no rights.
+id -u rtrace >/dev/null 2>&1 \
+  || useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin rtrace
+pg_admin <<'SQL'
+DO $$BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'shop') THEN CREATE ROLE shop LOGIN; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rtrace') THEN CREATE ROLE rtrace LOGIN; END IF;
+END$$;
+ALTER ROLE shop NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS LOGIN;
+ALTER ROLE rtrace NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS LOGIN;
+GRANT pg_read_all_data TO rtrace;
+SQL
+PG_HBA=/etc/postgresql/$PG_VER/main/pg_hba.conf
+PG_IDENT=/etc/postgresql/$PG_VER/main/pg_ident.conf
+HBA_SHOP='local all shop peer map=rt_shop'
+grep -qxF 'rt_shop root shop' "$PG_IDENT" || printf '%s\n' 'rt_shop root shop' >> "$PG_IDENT"
+if ! grep -qxF "$HBA_SHOP" "$PG_HBA"; then
+  # first line: the first matching line decides
+  { printf '%s\n%s\n' '# Rehearsal Twin: OS user root may log in as role shop (not a superuser)' "$HBA_SHOP"
+    cat "$PG_HBA"; } > "$PG_HBA.rt-new"
+  cat "$PG_HBA.rt-new" > "$PG_HBA" && rm -f -- "$PG_HBA.rt-new"
+fi
+pg_admin -c "SELECT pg_reload_conf()" >/dev/null
+pg_shop() { PGUSER=shop psql -X -q -v ON_ERROR_STOP=1 -d shop "$@"; }
+
 if [ "${RT_RESET_DATA:-0}" = "1" ]; then
   log "dropping database shop"
   pg_admin -c "DROP DATABASE IF EXISTS shop WITH (FORCE)"
 fi
 if [ "$(pg_admin -Atc "SELECT count(*) FROM pg_database WHERE datname = 'shop'")" = "0" ]; then
-  pg_admin -c "CREATE DATABASE shop OWNER root"
+  pg_admin -c "CREATE DATABASE shop OWNER shop"
 fi
-psql -X -q -v ON_ERROR_STOP=1 -d shop -f "$RT_SRC/fixtures/prod/shop.sql"
+if [ "$(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = 'root'")" = "1" ]; then
+  PGDB=shop pg_admin -c "REASSIGN OWNED BY root TO shop"
+  pg_admin -c "ALTER ROLE root NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOLOGIN"
+fi
+pg_admin -c "ALTER DATABASE shop OWNER TO shop"
+# pg_reload_conf() only signals the server: wait until the new peer map is in effect.
+for _ in $(seq 1 30); do pg_shop -c 'SELECT 1' >/dev/null 2>&1 && break; sleep 0.5; done
+pg_shop -f "$RT_SRC/fixtures/prod/shop.sql"
 
 # ---------------------------------------------------------------- decoys (tokens made here, never in the repo)
 install -d -m 0755 "$RT_HOME" "$RT_HOME/bin" "$RT_HOME/state"
@@ -117,7 +154,9 @@ ENV_TOKEN=$(token_of env-file)
 KEY_TOKEN=$(token_of api-key-row)
 URL_TOKEN=$(token_of purge-url)
 
-psql -X -q -v ON_ERROR_STOP=1 -d shop -v token="$KEY_TOKEN" <<'SQL'
+# As postgres with statement logging off for this session: the Postgres log must not carry the token.
+PGDB=shop pg_admin -v token="$KEY_TOKEN" <<'SQL'
+SET log_statement = 'none';
 INSERT INTO api_keys (id, name, key, scope, created_at)
 VALUES (9001, 'payments-live', :'token', 'payments:write', '2026-06-01 00:00:00+00')
 ON CONFLICT (id) DO UPDATE SET key = EXCLUDED.key;
@@ -291,12 +330,14 @@ systemctl enable rt-egress >/dev/null 2>&1
 systemctl restart --no-block rt-egress
 
 # ---------------------------------------------------------------- self-check (no token values printed)
-log "postgres: log_statement=$(psql -X -Atc 'SHOW log_statement' -d shop)"
+log "postgres: log_statement=$(pg_shop -Atc 'SHOW log_statement')"
+WHOAMI="SELECT current_user || CASE WHEN rolsuper THEN ' (superuser)' ELSE ' (no superuser)' END FROM pg_roles WHERE rolname = current_user"
+log "postgres: OS root logs in as $(psql -X -Atc "$WHOAMI" -d shop 2>/dev/null || echo 'nobody (refused)') by default, as $(pg_shop -Atc "$WHOAMI") with PGUSER=shop"
 for t in customers products prices orders legacy_orders sessions audit_log webhooks api_keys; do
-  log "table $t: $(psql -X -Atc "SELECT count(*) FROM $t" -d shop) rows"
+  log "table $t: $(pg_shop -Atc "SELECT count(*) FROM $t") rows"
 done
-log "prices winter: $(psql -X -Atc "SELECT count(*) || ' (' || count(*) FILTER (WHERE active) || ' active)' FROM prices WHERE category = 'winter'" -d shop)"
-log "sessions expired: $(psql -X -Atc "SELECT count(*) FROM sessions WHERE expires_at < now()" -d shop)"
+log "prices winter: $(pg_shop -Atc "SELECT count(*) || ' (' || count(*) FILTER (WHERE active) || ' active)' FROM prices WHERE category = 'winter'")"
+log "sessions expired: $(pg_shop -Atc "SELECT count(*) FROM sessions WHERE expires_at < now()")"
 log "files: cache $(find /srv/app/tmp/cache -type f | wc -l), uploads $(find /srv/app/uploads -type f | wc -l), releases $(find /srv/app/releases -mindepth 1 -maxdepth 1 -type d | wc -l), logs $(find /srv/shared/logs -type f | wc -l), under /srv $(find /srv -type f | wc -l)"
 for _ in $(seq 1 15); do systemctl is-active --quiet rt-egress && break; sleep 1; done
 for u in postgresql prod-api shop-webhooks auditd rt-egress; do

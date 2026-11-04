@@ -11,7 +11,8 @@ rehearse() {  # rehearse NAME SCRIPT_FILE SCOPE_JSON
   local name=$1
   printf '%s\n' "$3" > "$W/$name.scope.json"
   /opt/rt/bin/rtrace before --scope "$W/$name.scope.json" > "$W/$name.state0.json" &&
-  /opt/rt/bin/rtrace run --script "$2" --wall 60 --mem 512M --pids 256 > "$W/$name.run.json" &&
+  /opt/rt/bin/rtrace run --script "$2" --wall 60 --mem 512M --pids 256 --scope "$W/$name.scope.json" \
+    > "$W/$name.run.json" &&
   /opt/rt/bin/rtrace after --scope "$W/$name.scope.json" > "$W/$name.state1.json" &&
   /opt/rt/bin/rtrace diff "$W/$name.state0.json" "$W/$name.state1.json" "$W/$name.run.json" \
     --scope "$W/$name.scope.json" > "$W/$name.ledger.json"
@@ -19,7 +20,7 @@ rehearse() {  # rehearse NAME SCRIPT_FILE SCOPE_JSON
 
 SHOP_SQL=${SHOP_SQL:-/opt/rt/src/fixtures/prod/shop.sql}
 SRV_BACKUP="$W/srv-backup.tar"
-reseed() { psql -X -q -v ON_ERROR_STOP=1 -d shop -f "$SHOP_SQL" >/dev/null; }
+reseed() { PGUSER=shop psql -X -q -v ON_ERROR_STOP=1 -d shop -f "$SHOP_SQL" >/dev/null; }
 restore_srv() {  # put /srv back exactly as it was before the file rehearsals
   local srv=/srv
   rm -rf -- "${srv:?}"/*

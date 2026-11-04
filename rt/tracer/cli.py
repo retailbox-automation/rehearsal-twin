@@ -1,7 +1,7 @@
 """rtrace: before / run / after / diff on the target machine (Python 3 stdlib + psql).
 
     rtrace before --scope scope.json > state0.json
-    rtrace run --script s.sh --wall 60 --mem 512M --pids 256 > run.json
+    rtrace run --script s.sh --wall 60 --mem 512M --pids 256 --scope scope.json > run.json
     rtrace after --scope scope.json > state1.json
     rtrace diff state0.json state1.json run.json --scope scope.json > ledger.json
 
@@ -132,10 +132,18 @@ def process_state(pid, proc_root: str = "/proc") -> str | None:
     return fields[0] if sep and fields else None
 
 
-def egress_service(proc_root: str = "/proc") -> dict:
-    info = runner.show("rt-egress.service", "ActiveState", "MainPID", "NRestarts")
+def service_state(unit: str, proc_root: str = "/proc") -> dict:
+    info = runner.show(unit, "ActiveState", "MainPID", "NRestarts")
     return {"active": info.get("ActiveState"), "main_pid": info.get("MainPID"), "restarts": info.get("NRestarts"),
             "state": process_state(info.get("MainPID"), proc_root)}
+
+
+def egress_service(proc_root: str = "/proc") -> dict:
+    return service_state("rt-egress.service", proc_root)
+
+
+def audit_service(proc_root: str = "/proc") -> dict:
+    return service_state("auditd.service", proc_root)
 
 
 def tracked_roots(cfg: dict, scope_raw) -> list:
@@ -173,6 +181,7 @@ def capture(cfg: dict, scope_raw=None, settle_max: float = 0.0, rearm: bool = Fa
         "iptables": iptables_state(),
         "egress_active": egress_active(),
         "egress_service": egress_service(),
+        "audit_service": audit_service(),
         "routes_sha256": routes_digest(),
         "self_digest": self_digest(cfg),
         "decoy_watch": watch,
@@ -195,13 +204,21 @@ def settle(cfg: dict, settle_max: float, quiet_s: float = 2.0, step: float = 0.5
             return
 
 
+def sandbox_env(cfg: dict) -> tuple:
+    user = (cfg.get("pg") or {}).get("script_user")
+    return (f"PGUSER={user}",) if user else ()
+
+
 def cmd_run(args, cfg) -> dict:
+    scope_raw = _load_json(args.scope) if args.scope else None
+    # Writable in the sandbox: exactly what `before`/`after` scan with the same scope (real paths).
+    rw = runner.writable_paths(tracked_roots(cfg, scope_raw), protected=cfg.get("exclude") or ())
     start_offsets = log_offsets(cfg)
     start_ipt = iptables_state()
     res = runner.run_script(args.script, wall=args.wall, mem=args.mem, pids=args.pids, cwd=args.cwd,
                             slice_name=cfg.get("run_slice", "rt.slice"),
                             stats_dir=(cfg.get("self_root") or config.RT_HOME) + "/state",
-                            allow=tuple(cfg.get("sandbox_allow") or ()))
+                            allow=tuple(cfg.get("sandbox_allow") or ()), rw_paths=rw, env=sandbox_env(cfg))
     res["kind"] = "rt-run"
     res["offsets_start"] = start_offsets
     res["offsets_end"] = log_offsets(cfg)
@@ -214,7 +231,7 @@ def read_sources(cfg: dict, state0: dict, state1: dict, run: dict) -> dict:
     end = state1.get("offsets") or {}
     pg = cfg.get("pg") or {}
     sql = logs.parse_pg_log(logs.read_window(pg.get("log_path", ""), start.get("pg_log", 0), end.get("pg_log")),
-                            exclude_apps=tuple(pg.get("exclude_apps") or ()))
+                            exclude_users=tuple(pg.get("exclude_users") or ()))
     defs = config.load_canaries(cfg.get("canaries_path", ""))
     keys = {d["audit_key"] for d in defs if d.get("audit_key")}
     audit = logs.parse_audit_log(logs.read_window(cfg.get("audit_log", ""), start.get("audit_log", 0),
@@ -244,7 +261,11 @@ def kernel_log(since: float | None, until: float | None) -> str:
 def cmd_diff(args, cfg) -> dict:
     state0, state1, run = _load_json(args.state0), _load_json(args.state1), _load_json(args.run)
     scope_raw = _load_json(args.scope) if args.scope else {}
-    facts = diff.build_facts(state0, state1, run, read_sources(cfg, state0, state1, run), cfg)
+    sources = read_sources(cfg, state0, state1, run)
+    m1 = state1.get("files") or {}
+    files, _ = fsstate.diff(state0.get("files") or {}, m1)
+    sources["large_hashes"] = fsstate.hash_unhashed(files["created"] + files["modified"], m1)
+    facts = diff.build_facts(state0, state1, run, sources, cfg)
     facts["generated_at"] = _now_iso()
     return finalize(facts, scope_raw)
 
@@ -261,6 +282,7 @@ def main(argv=None) -> int:
     r.add_argument("--mem", default="512M")
     r.add_argument("--pids", type=int, default=256)
     r.add_argument("--cwd")
+    r.add_argument("--scope", help="scope.json: declared paths outside the tracked roots become writable")
     a = sub.add_parser("after")
     a.add_argument("--scope")
     a.add_argument("--settle-max", type=float, default=20.0)

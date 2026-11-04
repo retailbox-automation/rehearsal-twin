@@ -44,8 +44,12 @@ PG_LINE = re.compile(
 PG_STATEMENT = re.compile(r"^(?:statement|execute [^:]*):\s?(?P<sql>.*)$", re.S)
 
 
-def parse_pg_log(text: str, exclude_apps=()) -> list:
-    """Statements logged with log_statement='all', in order; errors attached to their statement."""
+def parse_pg_log(text: str, exclude_users=()) -> list:
+    """Statements logged with log_statement='all', in order; errors attached to their statement.
+
+    Lines of the roles in exclude_users (the tracer's own role) are dropped. The user field is the
+    session user Postgres authenticated; application_name is set by the client and never used here.
+    """
     out = []
     last_by_pid = {}
     current = None
@@ -59,7 +63,7 @@ def parse_pg_log(text: str, exclude_apps=()) -> list:
             continue
         current = None
         app = m.group("app")
-        if app in exclude_apps:
+        if m.group("user") in exclude_users:
             continue
         level, msg, pid = m.group("level"), m.group("msg"), m.group("pid")
         if level == "LOG":

@@ -19,9 +19,17 @@ be able to undo it:
   with ProtectProc=invisible (no CAP_SYS_PTRACE) it cannot see it in /proc, and
   without CAP_SETUID / CAP_SETGID it cannot become that user (signal permission
   only compares uids). The script stays root; su, sudo and runuser fail inside.
-* no way to run code outside the sandbox later: the systemd and D-Bus control
-  sockets are hidden, cron, systemd units, shell and login startup files,
-  ld.so preload, sshd/pam config, /usr and the tracer itself are read-only.
+* writes only where the tracer looks: ProtectSystem=strict makes the whole tree
+  read-only except the tracked roots and the declared scope (ReadWritePaths=,
+  real paths), so a write the ledger could not show fails in the kernel. /usr,
+  /boot, /home, /root and /run stay read-only even when listed; /tmp and
+  /var/tmp are private to the run.
+* no way to run code outside the sandbox later: the systemd, D-Bus and user
+  manager sockets are hidden, cron, systemd units, init scripts, rc.local,
+  logrotate, motd scripts, shell and login startup files, ld.so preload and
+  cache, sshd/pam config, /usr and the tracer itself are read-only.
+* nothing that tells decoys apart: the decoy registry, the recorder's CA key and
+  the logs that hold earlier records (egress, Postgres, audit) are hidden.
 * limits: MemoryMax (no swap), TasksMax, RuntimeMaxSec, OOMPolicy=continue.
 
 Measured by an ExecStopPost helper that runs outside the sandbox ("+") inside
@@ -44,7 +52,8 @@ FAKE_RANGE = "198.18.0.0/15"
 DROP_CAPS = ("CAP_NET_ADMIN", "CAP_NET_RAW", "CAP_SYS_ADMIN", "CAP_SYS_MODULE", "CAP_SYS_PTRACE", "CAP_BPF",
              "CAP_SYS_BOOT", "CAP_SYS_RAWIO", "CAP_SYS_TIME", "CAP_MKNOD", "CAP_DAC_READ_SEARCH",
              "CAP_AUDIT_CONTROL", "CAP_PERFMON", "CAP_SYSLOG", "CAP_KILL", "CAP_SETUID", "CAP_SETGID")
-# Files that root processes outside the sandbox would execute or trust later.
+# Files that root processes outside the sandbox would execute or trust later. Under a writable
+# tracked root (/etc) these stay read-only: a nested mount wins over its parent.
 READ_ONLY_PATHS = (
     "/opt/rt",
     "/etc/crontab", "/etc/cron.d", "/etc/cron.hourly", "/etc/cron.daily", "/etc/cron.weekly",
@@ -52,11 +61,23 @@ READ_ONLY_PATHS = (
     "/etc/systemd", "/etc/default/rt-egress", "/etc/audit",
     "/etc/profile", "/etc/profile.d", "/etc/bash.bashrc", "/etc/environment",
     "/etc/ssh", "/etc/pam.d", "/etc/security", "/etc/sudoers", "/etc/sudoers.d",
-    "/etc/ld.so.preload", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
-    "/var/log/rt-egress", "/var/log/postgresql", "/var/log/audit",
+    "/etc/ld.so.preload", "/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/ld.so.cache",
+    # run as root on the next ssh login (pam_motd: the control machine logs in for `after`),
+    # by the log rotation, at boot or on network and device events
+    "/etc/update-motd.d", "/etc/logrotate.conf", "/etc/logrotate.d", "/etc/init.d", "/etc/rc.local",
+    "/etc/networkd-dispatcher", "/etc/udev/rules.d", "/etc/modprobe.d",
 )
+# Sockets that start code outside the sandbox, and what would tell the script which files, rows and
+# URLs are decoys (registry, earlier egress and audit records, the Postgres log with the decoy row's
+# INSERT) or let it sign certificates the machine trusts (the recorder's CA key).
 INACCESSIBLE_PATHS = ("/run/systemd/private", "/run/dbus/system_bus_socket", "/run/snapd.socket",
-                      "/run/snapd-snap.socket")
+                      "/run/snapd-snap.socket", "/run/user",
+                      "/opt/rt/canaries.json", "/opt/rt/egress",
+                      "/var/log/rt-egress", "/var/log/postgresql", "/var/log/audit")
+# Never writable from the sandbox, whatever the tracked roots or the scope say: binaries and
+# libraries that root runs outside the sandbox (/usr/local/bin comes first in root's PATH), home
+# directories with shell startup files, runtime sockets and kernel interfaces.
+NEVER_WRITABLE = ("/usr", "/boot", "/efi", "/home", "/root", "/run", "/proc", "/sys", "/dev")
 SCRIPT_ENV = ("HOME=/root", "LANG=C.UTF-8", "SHELL=/bin/bash", "USER=root", "LOGNAME=root")
 STOP_TIMEOUT_S = 5
 
@@ -100,7 +121,29 @@ def new_unit_name(prefix: str = "rt-run") -> str:
 RESOLV_CONF = "nameserver 127.0.0.1\n"
 
 
-def sandbox_properties(mem_bytes: int, pids: int, wall: float, allow=(), resolv_path: str | None = None) -> list:
+def _under(path: str, prefixes) -> bool:
+    return any(path == p or path.startswith(p.rstrip("/") + "/") for p in prefixes)
+
+
+def writable_paths(roots, protected=(), realpath=None) -> list:
+    """ReadWritePaths= for a run: the real paths of the tracked roots and declared scope paths,
+    minus anything that must stay read-only. "/" is never writable (it would open /usr)."""
+    blocked = NEVER_WRITABLE + READ_ONLY_PATHS + INACCESSIBLE_PATHS + tuple(protected)
+    realpath = realpath or os.path.realpath
+    out = []
+    for r in roots:
+        if not isinstance(r, str) or not r.startswith("/"):
+            continue
+        real = os.path.normpath(realpath(r))
+        if real == "/" or _under(real, blocked) or _under(os.path.normpath(r), blocked):
+            continue
+        if real not in out:
+            out.append(real)
+    return out
+
+
+def sandbox_properties(mem_bytes: int, pids: int, wall: float, allow=(), resolv_path: str | None = None,
+                       rw_paths=()) -> list:
     props = [
         f"MemoryMax={mem_bytes}", "MemorySwapMax=0", f"TasksMax={pids}",
         f"RuntimeMaxSec={max(1, math.ceil(wall))}", f"TimeoutStopSec={STOP_TIMEOUT_S}", "OOMPolicy=continue",
@@ -117,7 +160,11 @@ def sandbox_properties(mem_bytes: int, pids: int, wall: float, allow=(), resolv_
         "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
         "RestrictNamespaces=yes",
         "PrivateDevices=yes",
-        "ProtectSystem=yes", "ProtectHome=read-only",
+        "ProtectSystem=strict", "ProtectHome=read-only", "PrivateTmp=yes",
+    ]
+    if rw_paths:
+        props.append("ReadWritePaths=" + " ".join("-" + p for p in rw_paths))
+    props += [
         "ReadOnlyPaths=" + " ".join("-" + p for p in READ_ONLY_PATHS),
         "InaccessiblePaths=" + " ".join("-" + p for p in INACCESSIBLE_PATHS),
     ]
@@ -130,12 +177,12 @@ def sandbox_properties(mem_bytes: int, pids: int, wall: float, allow=(), resolv_
 
 def build_command(unit: str, script: str, mem_bytes: int, pids: int, wall: float, stats_path: str,
                   helper_path: str, cwd: str, allow=(), slice_name: str = "rt.slice",
-                  shell: str = "/bin/bash", resolv_path: str | None = None) -> list:
+                  shell: str = "/bin/bash", resolv_path: str | None = None, rw_paths=(), env=()) -> list:
     argv = ["systemd-run", "--wait", "--pipe", "--collect", "--quiet",
             f"--unit={unit}", f"--slice={slice_name}", f"--working-directory={cwd}"]
-    for e in SCRIPT_ENV:
+    for e in tuple(SCRIPT_ENV) + tuple(env):
         argv += ["-E", e]
-    for p in sandbox_properties(mem_bytes, pids, wall, allow, resolv_path):
+    for p in sandbox_properties(mem_bytes, pids, wall, allow, resolv_path, rw_paths):
         argv += ["-p", p]
     argv += ["-p", f"ExecStopPost=+/bin/bash {helper_path} {stats_path} {unit}.service"]
     return argv + ["--", shell, script]
@@ -252,12 +299,12 @@ def preflight_ip_filter(timeout: float = 15.0, slice_name: str = "rt.slice") -> 
 
 def run_script(script: str, wall: float, mem: str, pids: int, cwd: str | None = None,
                slice_name: str = "rt.slice", stats_dir: str = "/opt/rt/state", allow=(),
-               preflight=preflight_ip_filter) -> dict:
+               preflight=preflight_ip_filter, rw_paths=(), env=()) -> dict:
     os.makedirs(stats_dir, exist_ok=True)
     script = os.path.abspath(script)
     cwd = cwd or os.path.dirname(script)
     mem_bytes = parse_size(mem)
-    base = {"script": script, "sandbox": {"mode": "service"}}
+    base = {"script": script, "sandbox": {"mode": "service", "read_write": list(rw_paths)}}
     ok, detail = preflight(slice_name=slice_name)
     base["sandbox"]["ip_filter"] = "active" if ok else "unavailable"
     base["sandbox"]["ip_filter_detail"] = detail
@@ -276,7 +323,7 @@ def run_script(script: str, wall: float, mem: str, pids: int, cwd: str | None = 
         f.write(RESOLV_CONF)
     os.chmod(resolv_path, 0o644)
     argv = build_command(unit, script, mem_bytes, pids, wall, stats_path, helper_path, cwd, allow, slice_name,
-                         resolv_path=resolv_path)
+                         resolv_path=resolv_path, rw_paths=rw_paths, env=env)
     env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
     started = time.time()
     t0 = time.monotonic()

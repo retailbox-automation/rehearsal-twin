@@ -117,3 +117,43 @@ def test_tracked_roots_add_declared_paths_outside_defaults():
     cfg = {"track_roots": ["/srv", "/etc"]}
     assert cli.tracked_roots(cfg, None) == ["/srv", "/etc"]
     assert cli.tracked_roots(cfg, {"paths": ["/srv/app/tmp", "/var/lib/app"]}) == ["/srv", "/etc", "/var/lib/app"]
+
+
+def test_run_makes_tracked_roots_and_scope_writable_and_logs_in_as_the_script_role(tmp_path, monkeypatch):
+    """Finding 6 (writable = traced) and finding 3/5 (PGUSER=shop) wired through `rtrace run`."""
+    seen = {}
+
+    def fake_run_script(script, **kw):
+        seen.update(kw)
+        return {"script": script, "sandbox": {"mode": "service"}}
+
+    monkeypatch.setattr(cli.runner, "run_script", fake_run_script)
+    monkeypatch.setattr(cli, "iptables_state", lambda: {})
+    monkeypatch.setattr(cli, "log_offsets", lambda cfg: {})
+    monkeypatch.setattr(cli.runner.os.path, "realpath", lambda p: p)  # this Mac has /etc -> /private/etc
+    scope = tmp_path / "scope.json"
+    scope.write_text('{"paths": ["/srv/app/tmp", "/var/lib/app", "/usr/local/bin"]}')
+    cfg = {"track_roots": ["/srv", "/etc", "/root", "/usr/local", "/var/spool/cron"], "exclude": ["/opt/rt"],
+           "self_root": str(tmp_path), "pg": {"script_user": "shop"}}
+
+    class A:
+        script, wall, mem, pids, cwd = "/opt/rt/work/r/script.sh", 60, "512M", 256, None
+
+    a = A()
+    a.scope = str(scope)
+    cli.cmd_run(a, cfg)
+    assert seen["rw_paths"] == ["/srv", "/etc", "/var/lib/app"]
+    assert seen["env"] == ("PGUSER=shop",)
+    a.scope = None
+    cli.cmd_run(a, cfg)
+    assert seen["rw_paths"] == ["/srv", "/etc"]
+    cli.cmd_run(a, dict(cfg, pg={}))
+    assert seen["env"] == ()
+
+
+def test_capture_records_auditd_state(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli.runner, "show", lambda unit, *p: calls.append(unit) or {"ActiveState": "active",
+                                                                                     "MainPID": "0"})
+    assert cli.audit_service()["active"] == "active"
+    assert calls == ["auditd.service"]

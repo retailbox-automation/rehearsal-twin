@@ -1,10 +1,10 @@
 import json
 
-from rt.tracer import logs
+from rt.tracer import config, logs
 
 PG = (
     "2026-11-03 16:10:00.100 UTC [101] root@shop psql: LOG:  statement: DELETE FROM sessions WHERE expires_at < now()\n"
-    "2026-11-03 16:10:00.200 UTC [102] postgres@shop rtrace: LOG:  statement: SELECT 1\n"
+    "2026-11-03 16:10:00.200 UTC [102] rtrace@shop rtrace: LOG:  statement: SELECT 1\n"
     "2026-11-03 16:10:00.300 UTC [103] root@shop psql: LOG:  statement: UPDATE prices\n"
     "\tSET amount = amount * 1.1\n"
     "\tWHERE category = 'winter'\n"
@@ -17,7 +17,7 @@ PG = (
 
 
 def test_parse_pg_log_statements_multiline_errors_and_excludes():
-    out = logs.parse_pg_log(PG, exclude_apps=("rtrace",))
+    out = logs.parse_pg_log(PG, exclude_users=("rtrace",))
     assert [s["statement"] for s in out] == [
         "DELETE FROM sessions WHERE expires_at < now()",
         "UPDATE prices\nSET amount = amount * 1.1\nWHERE category = 'winter'",
@@ -61,3 +61,24 @@ def test_parse_jsonl_counts_bad_lines():
     recs, bad = logs.parse_jsonl(text)
     assert [r["kind"] for r in recs] == ["dns", "https"]
     assert bad == 2
+
+
+def test_application_name_cannot_hide_a_statement():
+    """Finding 3: PGAPPNAME=rtrace (or shop-webhooks) used to drop the script's SQL from sql[]."""
+    text = (
+        "2026-11-04 10:00:00.000 UTC [201] shop@shop rtrace: LOG:  statement: DELETE FROM orders\n"
+        "2026-11-04 10:00:00.100 UTC [202] shop@shop shop-webhooks: LOG:  statement: ALTER SYSTEM SET log_statement = 'none'\n"
+        "2026-11-04 10:00:00.200 UTC [203] rtrace@shop psql: LOG:  statement: SELECT 'T', 1\n"
+    )
+    out = logs.parse_pg_log(text, exclude_users=tuple(config.DEFAULTS["pg"]["exclude_users"]))
+    assert [(s["user"], s["app"], s["statement"]) for s in out] == [
+        ("shop", "rtrace", "DELETE FROM orders"),
+        ("shop", "shop-webhooks", "ALTER SYSTEM SET log_statement = 'none'"),
+    ]
+
+
+def test_tracer_reads_as_its_own_role_not_a_superuser_or_the_script_role():
+    pg = config.DEFAULTS["pg"]
+    assert pg["run_as"] == "rtrace" and pg["exclude_users"] == ["rtrace"]
+    assert pg["script_user"] == "shop" and pg["script_user"] not in pg["exclude_users"]
+    assert "exclude_apps" not in pg

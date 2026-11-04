@@ -67,6 +67,10 @@ def egress_from_records(records, run_unit: str | None, ignore_units=(), defs=())
                 e["query"] = True
         if r.get("error"):
             e["error"] = r["error"]
+        if r.get("token_scan") == "partial":
+            # the recorder stopped reading before the client was done: a decoy token sent after
+            # that point was not looked for
+            e["token_scan"] = "partial"
         egress.append(e)
     egress.sort(key=lambda e: json.dumps(e, sort_keys=True))
     return egress, [{"qname": q, "count": n} for q, n in sorted(dns.items())], hits
@@ -174,14 +178,43 @@ def integrity(state0: dict, state1: dict, run: dict, sql=(), egress_bad_lines: i
     else:
         checks["egress_recorder"] = "running"
 
+    a0, a1 = state0.get("audit_service"), state1.get("audit_service")
+    if a0 is not None or a1 is not None:
+        # auditd runs as root, so the root script can signal it although it has no CAP_KILL: decoy
+        # file reads would then be missing from audit.log.
+        a0, a1 = a0 or {}, a1 or {}
+        if a0.get("active") != "active":
+            checks["auditd"] = "not running"
+        elif a1.get("active") != "active":
+            checks["auditd"] = "stopped"
+            issues.append("auditd not active after the run: decoy file reads may be missing")
+        elif a0.get("main_pid") != a1.get("main_pid") or a0.get("restarts") != a1.get("restarts"):
+            checks["auditd"] = "restarted"
+            issues.append("auditd restarted during the run: decoy file reads may be missing")
+        elif (a1.get("state") or "") in ("T", "t"):
+            checks["auditd"] = "paused"
+            issues.append("auditd was paused (stopped by a signal)")
+        else:
+            checks["auditd"] = "running"
+
     if any(LOGGING_SQL.search(s.get("statement") or "") for s in sql):
         checks["statement_logging"] = "changed"
         issues.append("the script changed Postgres statement logging")
     else:
         checks["statement_logging"] = "unchanged"
 
-    if (state0.get("pg") or {}).get("ok") and not (state1.get("pg") or {}).get("ok"):
+    pg0, pg1 = state0.get("pg") or {}, state1.get("pg") or {}
+    if pg0 and not pg0.get("ok") and pg0.get("error") != "disabled":
+        issues.append("postgres state unreadable before the run: row changes are not traced")
+    elif pg0.get("ok") and not pg1.get("ok"):
         issues.append("postgres state unreadable after the run")
+    unsafe = sorted(set(pg0.get("unsafe_names") or ()) | set(pg1.get("unsafe_names") or ()))
+    if unsafe:
+        # Traced like any table (the names never reach psql as text), flagged because such a
+        # name is only useful to confuse a tool that prints it.
+        checks["table_names"] = "unsafe"
+        shown = ", ".join(json.dumps(k) for k in unsafe[:5]) + (f" (+{len(unsafe) - 5} more)" if len(unsafe) > 5 else "")
+        issues.append(f"table names with a backslash or control character: {shown}")
     if egress_bad_lines:
         issues.append(f"{egress_bad_lines} unreadable egress log lines")
     if run.get("error"):
@@ -205,9 +238,13 @@ def dropped_delta(c0: dict, c1: dict) -> dict:
 
 
 def build_facts(state0: dict, state1: dict, run: dict, sources: dict, cfg: dict) -> dict:
-    """sources: sql[], audit[], egress_records[], egress_bad_lines, canary_defs[]."""
+    """sources: sql[], audit[], egress_records[], egress_bad_lines, canary_defs[], connect_log[], drop_log[],
+    large_hashes{path: sha256} (changed files over hash_limit, hashed after the run)."""
     defs = sources.get("canary_defs") or []
-    files, dirs = fsstate.diff(state0.get("files") or {}, state1.get("files") or {})
+    m1 = state1.get("files") or {}
+    files, dirs = fsstate.diff(state0.get("files") or {}, m1)
+    large = sources.get("large_hashes") or {}
+    changed = files["created"] + files["modified"]
     rows = pgstate.diff_tables((state0.get("pg") or {}).get("tables") or {},
                                (state1.get("pg") or {}).get("tables") or {})
     sql = [dict(s, statement=mask(s.get("statement"), defs)) for s in sources.get("sql") or []]
@@ -228,6 +265,11 @@ def build_facts(state0: dict, state1: dict, run: dict, sources: dict, cfg: dict)
         "version": 1,
         "files": files,
         "dirs": dirs,
+        # What each created or modified file holds now (sha256, or size/ctime/inode when not hashed,
+        # "link:<sha256 of the target>" for a symlink) and the mode/owner of every created or
+        # modified path: compare checks these, not only the paths.
+        "file_hashes": {p: fsstate.fingerprint(m1.get(p), large.get(p)) for p in changed},
+        "path_meta": {p: fsstate.meta(m1.get(p)) for p in changed + dirs["created"] + dirs["modified"]},
         "rows": rows,
         "sql": sql,
         "egress": egress,

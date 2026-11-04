@@ -373,7 +373,7 @@ class Orchestrator:
             self._save(rec, status="blocked_goal", error="the input filter flagged the goal: "
                                                          + (", ".join(v.categories) or "unsafe"))
             return None
-        plan = self.planner.plan(rec["goal"], rec["scope"], self.s.target_desc)
+        plan = self.planner.plan(rec["goal"], rec["scope"], self.s.target_desc, files=sorted(rec.get("files") or {}))
         script = plan["script"]
         self._save(rec, script_text=script, plan={"rationale": plan["rationale"], "expected": plan["expected"]})
         self._emit(rid, "plan", {"rationale": plan["rationale"], "script_sha256": sha256_hex(script.encode())})
@@ -503,7 +503,8 @@ class Orchestrator:
             except Exception as e:  # informational filter: a failed check is recorded, never read as safe
                 a["data_check_error"] = _err(e)
                 self._emit(rid, "error", {"message": f"input filter on ledger data failed: {_err(e)}"})
-        ex = self.planner.explain(ledger, rec["scope"], script)
+        # Companion files sit in the script's working directory; the model is told their names.
+        ex = self.planner.explain(ledger, rec["scope"], script, files=sorted(rec.get("files") or {}))
         self.store.write_json(rid, f"explain-{n}.json", ex)
         a["explain"] = {"summary": ex["summary"], "why_safer": ex["why_safer"],
                         "safer_script_sha256": sha256_hex(ex["safer_script"].encode())}

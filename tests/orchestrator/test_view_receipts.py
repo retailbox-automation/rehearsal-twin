@@ -72,6 +72,19 @@ def test_ledger_view_tables_and_webhooks():
     assert screen_summary(led, rows)["headline"] == "updated 93 rows"
 
 
+def test_ledger_view_shows_a_modified_directory_on_its_own_path_row():
+    # dirs.modified (mode/owner change) out of scope lands on a path row, claimed there.
+    facts = {"files": {"created": [], "modified": [], "deleted": []},
+             "dirs": {"created": [], "modified": ["/srv/app/uploads"], "deleted": []},
+             "rows": {}, "egress": [], "dns": [], "canaries": [], "exit": 0, "limits": {}}
+    led = finalize(facts, SCOPE_A)
+    assert [(o["op"], o["item"]) for o in led["out_of_scope"]] == [("dir_modified", "/srv/app/uploads")]
+    rows = ledger_view(led)
+    assert [(r["kind"], r["target"], r["verdict"], r["delta"], r["out_of_scope_rows"]) for r in rows] == [
+        ("path", "/srv/app/uploads", "out_of_scope", "~1 dir", 1)]
+    _covers_everything(led, rows)
+
+
 def test_state_version_ignores_hostname_and_mtime_but_not_data():
     s0 = L.machine_state()
     s1 = copy.deepcopy(s0)

@@ -16,8 +16,9 @@ from rt.ledger.scope import DIR_OPS, FILE_OPS, _egress_op, norm_table, path_in_s
 STEPS = ["rehearse", "review", "apply", "compare"]
 MAX_PATH_ROWS = 4
 TWIN_SUBTITLE = "Vultr VM from snapshot · VPC-only · no keys"
-OP_SIGN = {"deleted": "-", "created": "+", "modified": "~", "dir_deleted": "-", "dir_created": "+"}
-OP_ORDER = ("deleted", "created", "modified", "dir_deleted", "dir_created")
+OP_SIGN = {"deleted": "-", "created": "+", "modified": "~", "dir_deleted": "-", "dir_created": "+",
+           "dir_modified": "~"}
+OP_ORDER = ("deleted", "created", "modified", "dir_deleted", "dir_created", "dir_modified")
 
 
 def _plural(n: int, word: str) -> str:

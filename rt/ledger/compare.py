@@ -24,7 +24,7 @@ from collections import Counter
 from .scope import DDL_FLAGS, FILE_OPS, DIR_OPS, ScopeError, norm_host, norm_path, norm_table
 
 ROW_KEYS = ("inserted", "deleted", "updated")
-DIR_COMPARE_OPS = DIR_OPS + ("modified",)  # dirs.modified: mode/owner changes, when the tracer lists them
+DIR_COMPARE_OPS = DIR_OPS  # includes dirs.modified (mode/owner changes), when the tracer lists them
 CONTENT_FILE_OPS = ("created", "modified")
 
 

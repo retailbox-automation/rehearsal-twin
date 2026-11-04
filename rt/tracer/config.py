@@ -14,9 +14,14 @@ DEFAULTS = {
     "pg": {
         "enabled": True,
         "dbname": "shop",
-        "run_as": "postgres",
+        # The tracer reads as its own OS user and role (peer authentication): the sandboxed script
+        # cannot become that user, so its statements are told apart by role, not by application_name.
+        "run_as": "rtrace",
         "log_path": "/var/log/postgresql/postgresql-16-main.log",
-        "exclude_apps": ["rtrace", "shop-webhooks"],
+        "exclude_users": ["rtrace"],
+        # Role the rehearsed script logs in as (PGUSER in the sandbox): owner of the app tables,
+        # no superuser, so no COPY ... TO PROGRAM, ALTER SYSTEM or SET log_statement.
+        "script_user": "shop",
     },
     "audit_log": "/var/log/audit/audit.log",
     "egress_log": "/var/log/rt-egress/egress.jsonl",

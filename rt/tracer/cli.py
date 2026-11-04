@@ -214,7 +214,7 @@ def read_sources(cfg: dict, state0: dict, state1: dict, run: dict) -> dict:
     end = state1.get("offsets") or {}
     pg = cfg.get("pg") or {}
     sql = logs.parse_pg_log(logs.read_window(pg.get("log_path", ""), start.get("pg_log", 0), end.get("pg_log")),
-                            exclude_apps=tuple(pg.get("exclude_apps") or ()))
+                            exclude_users=tuple(pg.get("exclude_users") or ()))
     defs = config.load_canaries(cfg.get("canaries_path", ""))
     keys = {d["audit_key"] for d in defs if d.get("audit_key")}
     audit = logs.parse_audit_log(logs.read_window(cfg.get("audit_log", ""), start.get("audit_log", 0),

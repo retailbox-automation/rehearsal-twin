@@ -19,7 +19,7 @@ rehearse() {  # rehearse NAME SCRIPT_FILE SCOPE_JSON
 
 SHOP_SQL=${SHOP_SQL:-/opt/rt/src/fixtures/prod/shop.sql}
 SRV_BACKUP="$W/srv-backup.tar"
-reseed() { psql -X -q -v ON_ERROR_STOP=1 -d shop -f "$SHOP_SQL" >/dev/null; }
+reseed() { PGUSER=shop psql -X -q -v ON_ERROR_STOP=1 -d shop -f "$SHOP_SQL" >/dev/null; }
 restore_srv() {  # put /srv back exactly as it was before the file rehearsals
   local srv=/srv
   rm -rf -- "${srv:?}"/*

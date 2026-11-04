@@ -106,3 +106,44 @@ def test_stand_addresses_default_and_override():
     for bad in ("10.213", "10.213.77.0", "10.213.x", "300.1.1", ""):
         with pytest.raises(ValueError):
             rr.stand_addresses(bad)
+
+
+def test_stand_image_masks_systemd_binfmt():
+    # a privileged systemd stand shares the Docker VM's binfmt_misc: its systemd-binfmt must never run
+    assert set(rr.BINFMT_MASKED) == {"systemd-binfmt.service", "proc-sys-fs-binfmt_misc.automount",
+                                     "proc-sys-fs-binfmt_misc.mount"}
+    for unit in rr.BINFMT_MASKED:
+        assert unit in rr.DOCKERFILE
+    assert 'ln -sf /dev/null "/etc/systemd/system/$u"' in rr.DOCKERFILE
+
+
+def test_up_refuses_unmasked_binfmt(monkeypatch):
+    calls = []
+
+    def fake_sh(argv, input=None, timeout=120, check=False):
+        calls.append(argv)
+        if argv[:2] == ["docker", "run"] and "readlink" in argv:
+            return 0, "/lib/systemd/system/systemd-binfmt.service\n", ""   # not masked
+        return 0, "", ""
+
+    monkeypatch.setattr(rr, "sh", fake_sh)
+    t = rr.DockerTarget()
+    with pytest.raises(rr.GuardError):
+        t.up()
+    assert not any(a[:3] == ["docker", "network", "create"] for a in calls)  # nothing was started
+    assert not any("--privileged" in a for a in calls)
+
+
+def test_up_checks_every_masked_unit(monkeypatch):
+    seen = []
+
+    def fake_sh(argv, input=None, timeout=120, check=False):
+        if argv[:2] == ["docker", "run"] and "readlink" in argv:
+            seen.append(argv[-1])
+            return 0, "/dev/null\n", ""
+        raise RuntimeError("stop after the binfmt check")
+
+    monkeypatch.setattr(rr, "sh", fake_sh)
+    with pytest.raises(RuntimeError, match="stop after the binfmt check"):
+        rr.DockerTarget().up()
+    assert seen == [f"/etc/systemd/system/{u}" for u in rr.BINFMT_MASKED]

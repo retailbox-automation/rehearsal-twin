@@ -54,8 +54,15 @@ DOCKERFILE = """FROM ubuntu:24.04
 RUN apt-get update -q \\
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \\
     systemd systemd-sysv dbus procps postgresql auditd iptables iproute2 openssl curl wget \\
-    dnsutils netcat-openbsd iputils-ping python3 ca-certificates
+    dnsutils netcat-openbsd iputils-ping python3 ca-certificates \\
+ && for u in systemd-binfmt.service proc-sys-fs-binfmt_misc.automount proc-sys-fs-binfmt_misc.mount; do \\
+      ln -sf /dev/null "/etc/systemd/system/$u"; done
 """
+# The stand runs systemd in a --privileged container, so /proc/sys/fs/binfmt_misc is the Docker VM's own.
+# systemd-binfmt would register Ubuntu's python3.12 entry there at boot and, on stop, unregister EVERY
+# entry of the VM (Rosetta x86_64 included), breaking other containers on the machine. Masked in the
+# image and checked before the privileged container starts.
+BINFMT_MASKED = ("systemd-binfmt.service", "proc-sys-fs-binfmt_misc.automount", "proc-sys-fs-binfmt_misc.mount")
 DEFAULT_SCOPE = {"paths": ["/srv/app/tmp"], "tables": ["sessions"], "hosts": []}
 
 
@@ -178,7 +185,17 @@ class DockerTarget(Target):
         self.base_present = rc == 0
         sh(["docker", "build", "-q", "-t", IMAGE, "-"], input=DOCKERFILE.encode(), timeout=900, check=True)
 
+    def check_binfmt_masked(self):
+        """Refuse to boot the privileged stand unless systemd-binfmt is masked in the image (see BINFMT_MASKED)."""
+        for unit in BINFMT_MASKED:
+            rc, out, _ = sh(["docker", "run", "--rm", "--network", "none", "--entrypoint", "readlink", IMAGE,
+                             f"/etc/systemd/system/{unit}"])
+            if rc != 0 or out.strip() != "/dev/null":
+                raise GuardError(f"{unit} is not masked in {IMAGE}: the privileged stand would rewrite the "
+                                 "Docker VM's binfmt_misc (Rosetta) on boot and on stop")
+
     def up(self):
+        self.check_binfmt_masked()
         sh(["docker", "network", "create", "--internal", "--subnet", SUBNET, NET], check=True)
         sh(["docker", "run", "-d", "--name", SINK, "--network", NET, "--ip", SINK_IP,
             "--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW", "--memory", "256m",

@@ -34,6 +34,7 @@ class FakeTarget:
         self.ledgers = ledgers
         self.files: dict[str, bytes] = {}
         self.phases: list[str] = []
+        self.commands: list[tuple] = []  # (phase, sh -c body, args, paths present at that moment)
         self.fail: dict[str, object] = {}
         self.tamper: Callable[[dict], dict] | None = None
         self.on_phase: Callable[[str], None] | None = None
@@ -59,6 +60,7 @@ class FakeTarget:
             for phase in ("before", "run", "after"):
                 if f"{RT_BIN} {phase} " in body:
                     self.phases.append(phase)
+                    self.commands.append((phase, body, list(args), set(self.files)))
                     if self.on_phase:
                         self.on_phase(phase)
                     failed = self._fail(phase)

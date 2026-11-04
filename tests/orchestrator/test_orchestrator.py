@@ -357,3 +357,17 @@ def test_stray_calls_do_not_change_a_record(harness):
         with pytest.raises(RuntimeError):
             call(rec["id"])
     assert h.orch.load(rec["id"])["status"] == "applied" and len(h.events(rec["id"])) == n_events
+
+
+def test_rtrace_run_gets_the_scope_file_on_twins_and_production(harness):
+    # The sandbox makes only the scope's paths and the tracked roots writable, and reads the
+    # scope from `rtrace run --scope`: without it a script cannot write its own declared paths.
+    h = harness
+    rec = h.run_preset("a")
+    h.orch.approve_and_apply(rec["id"], approval_of(rec))
+    runs = [(body, args, present) for t in [*h.twins(), h.prod]
+            for phase, body, args, present in t.commands if phase == "run"]
+    assert len(runs) == 3  # two rehearsal attempts and the apply
+    for body, args, present in runs:
+        assert body.startswith('cd "$1" && ') and "--scope scope.json" in body.split(">")[0]
+        assert f"{args[0]}/scope.json" in present

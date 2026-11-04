@@ -306,3 +306,70 @@ def test_noise_vs_script_attempt():
     assert script["egress_denied"] == {"packets": 2}
     assert [(e["kind"], e["op"], e["count"]) for e in script["out_of_scope"]] == [("network", "denied", 2)]
     assert script["ledger_sha256"] != noise["ledger_sha256"]
+
+
+def _direct_ip_case(connects_end, connect_log, records=()):
+    s0, s1 = cleanup_states()
+    for s in (s0, s1):
+        s.update(routes_sha256="rt1", egress_service={"active": "active", "main_pid": "10", "restarts": "0",
+                                                      "state": "S"})
+    start = {"counters": {"udp_packets": 0, "other_packets": 0, "sandbox_packets": 0, "sandbox_connects": 5}}
+    s1["iptables"] = {"rules_sha256": "r1", "counters": {"udp_packets": 0, "other_packets": 0,
+                                                         "sandbox_packets": 0, "sandbox_connects": connects_end}}
+    src = cleanup_sources()
+    src["egress_records"] = list(records)
+    src["canary_defs"] = []
+    src["connect_log"] = list(connect_log)
+    scope = {"paths": ["/"], "tables": ["sessions"]}
+    return finalize(diff.build_facts(s0, s1, run_record(iptables_start=start), src, CFG), scope)
+
+
+def test_direct_ip_connection_counted_without_a_kernel_log_line():
+    """The recorder never saw it and the kernel log is empty (no LOG in a container): the counter alone
+    turns the verdict out of scope."""
+    led = _direct_ip_case(6, [])
+    assert led["egress"] == []
+    assert led["egress_denied"] == {"packets": 1}
+    assert [(e["kind"], e["op"], e["count"]) for e in led["out_of_scope"]] == [("network", "denied", 1)]
+    assert led["summary"]["verdict"] == "out_of_scope"
+    quiet = _direct_ip_case(5, [])
+    assert quiet["summary"]["verdict"] == "in_scope" and quiet["egress_denied"] == {"packets": 0}
+
+
+def test_direct_ip_connection_listed_from_the_kernel_log():
+    log = [{"proto": "tcp", "dst": "172.31.77.10", "dpt": 8080, "uid": "0"},
+           {"proto": "udp", "dst": "172.31.77.10", "dpt": 9998, "uid": "0"}]
+    led = _direct_ip_case(6, log)
+    assert led["egress"] == [
+        {"kind": "tcp", "host": "172.31.77.10", "port": 8080, "bytes_attempted": 0, "delivered": 0,
+         "source": "script", "blocked": "before handshake"},
+        {"kind": "udp", "host": "172.31.77.10", "port": 9998, "bytes_attempted": 0, "delivered": 0,
+         "source": "script", "blocked": "dropped by the firewall"},
+    ]
+    kinds = sorted((e["kind"], e["op"], e["item"]) for e in led["out_of_scope"])
+    assert kinds == [("host", "tcp:8080", "172.31.77.10"), ("host", "udp:9998", "172.31.77.10"),
+                     ("network", "denied", "outbound packets")]
+    assert led["summary"]["egress_attempts"] == 2 and led["summary"]["egress_bytes_delivered"] == 0
+    assert led["summary"]["verdict"] == "out_of_scope"
+
+
+def test_direct_ip_connection_the_recorder_did_record_is_not_listed_twice():
+    rec = {"kind": "http", "method": "POST", "host": "172.31.77.10", "orig_dst": "172.31.77.10", "port": 8080,
+           "path": "/up", "bytes_attempted": 120, "delivered": 0, "unit": "rt-run-ab12.service",
+           "canary_hits": []}
+    log = [{"proto": "tcp", "dst": "172.31.77.10", "dpt": 8080},
+           {"proto": "tcp", "dst": "172.31.77.10", "dpt": 8080}]
+    led = _direct_ip_case(7, log, [rec])
+    assert [(e.get("method"), e.get("path"), e.get("blocked")) for e in led["egress"]] == [
+        (None, None, "before handshake"), ("POST", "/up", None)]
+    # a record through a name (fake address) never pairs with a kernel log line
+    named = dict(rec, host="hooks.partner.example", orig_dst="198.18.0.7", port=80)
+    led = _direct_ip_case(6, log[:1], [named])
+    assert len(led["egress"]) == 2
+
+
+def test_connect_attempts_skips_unusable_lines():
+    bad = [{"proto": "icmp", "dst": "1.2.3.4", "dpt": 1}, {"proto": "tcp", "dpt": 80},
+           {"proto": "tcp", "dst": "1.2.3.4", "dpt": "80"}, {"dst": "1.2.3.4", "dpt": 80}]
+    assert diff.connect_attempts(bad, []) == []
+    assert diff.connect_attempts(None, []) == []

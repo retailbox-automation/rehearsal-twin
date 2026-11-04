@@ -221,21 +221,24 @@ def read_sources(cfg: dict, state0: dict, state1: dict, run: dict) -> dict:
                                                   end.get("audit_log")), keys or None)
     records, bad = logs.parse_jsonl(logs.read_window(cfg.get("egress_log", ""), start.get("egress_log", 0),
                                                      end.get("egress_log")))
+    klog = kernel_log(run.get("started_at"), state1.get("taken_epoch"))
     return {"sql": sql, "audit": audit, "egress_records": records, "egress_bad_lines": bad,
-            "canary_defs": defs, "drop_log": drop_log(run.get("started_at"), state1.get("taken_epoch"))}
+            "canary_defs": defs, "drop_log": egress.parse_drop_log(klog),
+            "connect_log": egress.parse_connect_log(klog)}
 
 
-def drop_log(since: float | None, until: float | None) -> list:
-    """Logged firewall drops in the run window from the kernel log (diagnosis only, may be empty)."""
+def kernel_log(since: float | None, until: float | None) -> str:
+    """Kernel log of the run window: logged firewall drops (diagnosis only) and the sandbox's
+    connections straight to IP addresses. Empty when it cannot be read; the counters still count."""
     if not since or not until:
-        return []
+        return ""
     try:
         p = subprocess.run(["journalctl", "-k", "--no-pager", "-o", "short-unix",
                             "--since", f"@{since - 1:.0f}", "--until", f"@{until + 1:.0f}"],
                            capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.SubprocessError):
-        return []
-    return egress.parse_drop_log(p.stdout) if p.returncode == 0 else []
+        return ""
+    return p.stdout if p.returncode == 0 else ""
 
 
 def cmd_diff(args, cfg) -> dict:

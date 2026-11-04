@@ -72,6 +72,28 @@ def egress_from_records(records, run_unit: str | None, ignore_units=(), defs=())
     return egress, [{"qname": q, "count": n} for q, n in sorted(dns.items())], hits
 
 
+BLOCKED = {"tcp": "before handshake", "udp": "dropped by the firewall"}
+
+
+def connect_attempts(connect_log, records) -> list:
+    """Egress entries for the script's connections straight to an IP address (kernel log of the nat
+    connect rule). The sandbox drops their replies, so the recorder normally has no record of them;
+    a connection the recorder did record (same address and port) is not listed twice."""
+    recorded = Counter((r.get("orig_dst"), r.get("port")) for r in records
+                       if r.get("kind") != "dns" and r.get("orig_dst"))
+    out = []
+    for c in connect_log or ():
+        proto, host, port = (c.get("proto") or "").lower(), c.get("dst"), c.get("dpt")
+        if proto not in BLOCKED or not host or not isinstance(port, int):
+            continue
+        if proto == "tcp" and recorded[(host, port)] > 0:
+            recorded[(host, port)] -= 1
+            continue
+        out.append({"kind": proto, "host": host, "port": port, "bytes_attempted": 0, "delivered": 0,
+                    "source": "script", "blocked": BLOCKED[proto]})
+    return out
+
+
 def evaluate_canaries(defs, files, rows, sql, audit, egress_records, hits) -> list:
     out = []
     for d in defs:
@@ -193,6 +215,8 @@ def build_facts(state0: dict, state1: dict, run: dict, sources: dict, cfg: dict)
     egress, dns, hits = egress_from_records(records, run.get("unit_name"), cfg.get("egress_ignore_units") or (),
                                             defs)
     kept = [r for r in records if (r.get("unit") or "") not in (cfg.get("egress_ignore_units") or ())]
+    egress = sorted(egress + connect_attempts(sources.get("connect_log"), kept),
+                    key=lambda e: json.dumps(e, sort_keys=True))
     canaries = evaluate_canaries(defs, files, rows, sources.get("sql") or [], sources.get("audit") or [],
                                  kept, hits)
     start_counters = (run.get("iptables_start") or state0.get("iptables") or {}).get("counters") or {}
@@ -208,8 +232,12 @@ def build_facts(state0: dict, state1: dict, run: dict, sources: dict, cfg: dict)
         "sql": sql,
         "egress": egress,
         "dns": dns,
-        # Packets from the rehearsal unit that the firewall dropped: the script's own attempts.
-        "egress_denied": {"packets": drops.get("sandbox_packets", 0) + drops.get("sandbox6_packets", 0)},
+        # Packets from the rehearsal unit that the firewall dropped: the script's own attempts. A TCP
+        # connection straight to an IP address counts once: its first packet went out, the sandbox
+        # denied the reply, so it never reached the recorder (counted by the kernel even when the
+        # kernel log has no line for it).
+        "egress_denied": {"packets": drops.get("sandbox_packets", 0) + drops.get("sandbox6_packets", 0)
+                          + drops.get("sandbox_connects", 0)},
         # Drops from other processes and route changes during the window: shown, never in scope,
         # never in the hash (the key is volatile).
         "system_noise": {

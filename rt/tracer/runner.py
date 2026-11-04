@@ -9,6 +9,10 @@ be able to undo it:
   iptables nat OUTPUT rewrites a connection to the recorder before the cgroup
   egress filter looks at the packet, so recorded calls still reach rt-egress;
   the fake range is allowed so the rewritten replies are accepted on the way back.
+  A connection straight to an IP address is redirected too, but its reply carries
+  that address and the filter drops it: the handshake never completes and the
+  recorder has nothing to record. rt-egress counts and logs such connections in
+  nat OUTPUT instead (sandbox-connect), and the ledger lists them as blocked.
 * no CAP_NET_ADMIN / CAP_NET_RAW / CAP_SYS_ADMIN ..., no AF_NETLINK or AF_PACKET:
   iptables, routes, raw sockets, namespaces and cgroup moves all fail.
 * the recorder runs as its own user: without CAP_KILL the script cannot signal it,

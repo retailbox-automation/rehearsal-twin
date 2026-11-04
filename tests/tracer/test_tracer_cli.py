@@ -51,6 +51,30 @@ def test_egress_service_reports_the_main_process_state(tmp_path, monkeypatch):
     assert cli.egress_service(str(tmp_path))["state"] is None
 
 
+def test_read_sources_parses_drops_and_connects_from_one_kernel_log_read(tmp_path, monkeypatch):
+    calls = []
+    klog = ("1.0 twin kernel: rt-egress sandbox-connect: IN= OUT=eth0 SRC=10.0.0.2 DST=192.0.2.5 LEN=60 "
+            "PROTO=TCP SPT=40000 DPT=443 UID=0 GID=0\n"
+            "1.1 twin kernel: rt-egress other: IN= OUT=eth0 SRC=10.0.0.2 DST=192.0.2.6 LEN=40 PROTO=TCP "
+            "SPT=1 DPT=80\n")
+
+    def fake_kernel_log(since, until):
+        calls.append((since, until))
+        return klog
+
+    monkeypatch.setattr(cli, "kernel_log", fake_kernel_log)
+    cfg = {"pg": {"log_path": str(tmp_path / "pg.log")}, "audit_log": str(tmp_path / "audit.log"),
+           "egress_log": str(tmp_path / "egress.jsonl"), "canaries_path": str(tmp_path / "canaries.json")}
+    src = cli.read_sources(cfg, {"offsets": {}}, {"offsets": {}, "taken_epoch": 20.0}, {"started_at": 10.0})
+    assert calls == [(10.0, 20.0)]
+    assert src["connect_log"] == [{"proto": "tcp", "dst": "192.0.2.5", "dpt": 443, "uid": "0"}]
+    assert [r["chain"] for r in src["drop_log"]] == ["other"]
+
+
+def test_kernel_log_needs_a_window():
+    assert cli.kernel_log(None, 20.0) == "" and cli.kernel_log(10.0, None) == ""
+
+
 def test_route_lifetimes_do_not_count_as_changes():
     a = ("default via fe80::1 dev enp1s0 proto ra metric 100 expires 26sec hoplimit 64 pref medium\n"
          "10.77.0.0/24 dev enp1s0 proto kernel scope link src 10.77.0.5 metric 100\n")

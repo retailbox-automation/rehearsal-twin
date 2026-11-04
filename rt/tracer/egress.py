@@ -12,6 +12,11 @@
   trusted only on this machine; the request is answered with 503.
 * filter OUTPUT accepts only loopback and allowed addresses. Other UDP and
   anything else is dropped and counted, so nothing leaves the machine.
+* A rehearsal script that connects straight to an IP address (not a name from
+  the DNS stub) is redirected too, but the sandbox's IP filter drops the reply,
+  so the recorder never accepts the connection. nat OUTPUT counts and logs the
+  first packet of every such connection (TCP and UDP, prefix "rt-egress
+  sandbox-connect: "), and the ledger lists it as blocked before the handshake.
 
 Each attempt is one JSON line in the egress log, with the calling process and
 its systemd unit when they can be found in /proc.
@@ -39,6 +44,7 @@ TCP_PORT = 15001
 LISTEN_ADDR = "127.0.0.1"
 FAKE_BASE = "198.18.0.0"
 FAKE_SIZE = 1 << 17
+FAKE_RANGE = "198.18.0.0/15"  # FAKE_BASE .. FAKE_BASE + FAKE_SIZE
 SO_ORIGINAL_DST = 80
 HEAD_MAX = 64 * 1024
 CAPTURE_MAX = 64 * 1024
@@ -55,6 +61,8 @@ OUT6_CHAIN = "RT_EGRESS_OUT6"
 DROP6_CHAIN = "RT_EGRESS_DROP6"
 SANDBOX_CHAIN = "RT_EGRESS_SANDBOX"
 SANDBOX6_CHAIN = "RT_EGRESS_SANDBOX6"
+CONNECT_CHAIN = "RT_EGRESS_CONNECT"
+CONNECT_LOG_PREFIX = "rt-egress sandbox-connect: "
 SANDBOX_SLICE = "rt.slice"
 
 HTTP_METHODS = (b"GET ", b"POST ", b"PUT ", b"DELETE ", b"PATCH ", b"HEAD ", b"OPTIONS ", b"CONNECT ",
@@ -646,12 +654,26 @@ def iptables_up_commands(allow, dns_port: int = DNS_PORT, tcp_port: int = TCP_PO
                          sandbox_slice: str | None = SANDBOX_SLICE) -> list:
     nat = ["iptables", "-w", "-t", "nat"]
     flt = ["iptables", "-w"]
-    c = [nat + ["-N", NAT_CHAIN],
-         nat + ["-A", NAT_CHAIN, "-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", str(dns_port)],
-         nat + ["-A", NAT_CHAIN, "-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", str(dns_port)],
-         nat + ["-A", NAT_CHAIN, "-m", "addrtype", "--dst-type", "LOCAL", "-j", "RETURN"]]
+    c = []
+    if sandbox_slice:
+        # Only the first packet of a connection passes nat, so this counts connections, not packets.
+        # The tcp RETURN rule carries the count (UDP is already counted per packet in SANDBOX_CHAIN).
+        c += [nat + ["-N", CONNECT_CHAIN],
+              nat + ["-A", CONNECT_CHAIN, "-m", "limit", "--limit", "30/min", "--limit-burst", "30",
+                     "-j", "LOG", "--log-prefix", CONNECT_LOG_PREFIX, "--log-uid"],
+              nat + ["-A", CONNECT_CHAIN, "-p", "tcp", "-j", "RETURN"]]
+    c += [nat + ["-N", NAT_CHAIN],
+          nat + ["-A", NAT_CHAIN, "-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", str(dns_port)],
+          nat + ["-A", NAT_CHAIN, "-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", str(dns_port)],
+          nat + ["-A", NAT_CHAIN, "-m", "addrtype", "--dst-type", "LOCAL", "-j", "RETURN"]]
     for a in allow:
         c.append(nat + ["-A", NAT_CHAIN, "-d", a, "-j", "RETURN"])
+    if sandbox_slice:
+        # A rehearsal unit connecting to an address that is not from the DNS stub's fake range:
+        # counted and logged, then redirected like any other connection.
+        for proto in ("tcp", "udp"):
+            c.append(nat + ["-A", NAT_CHAIN, "-p", proto, "-m", "cgroup", "--path", sandbox_slice,
+                            "!", "-d", FAKE_RANGE, "-j", CONNECT_CHAIN])
     c.append(nat + ["-A", NAT_CHAIN, "-p", "tcp", "-j", "REDIRECT", "--to-ports", str(tcp_port)])
     c.append(nat + ["-I", "OUTPUT", "1", "-j", NAT_CHAIN])
     c += _drop_chain("iptables", UDP_CHAIN, "udp") + _drop_chain("iptables", DROP_CHAIN, "other")
@@ -699,6 +721,7 @@ def iptables_down_commands() -> list:
     flt = ["iptables", "-w"]
     f6 = ["ip6tables", "-w"]
     c = [nat + ["-D", "OUTPUT", "-j", NAT_CHAIN], nat + ["-F", NAT_CHAIN], nat + ["-X", NAT_CHAIN],
+         nat + ["-F", CONNECT_CHAIN], nat + ["-X", CONNECT_CHAIN],
          flt + ["-D", "OUTPUT", "-j", OUT_CHAIN], flt + ["-F", OUT_CHAIN], flt + ["-X", OUT_CHAIN],
          f6 + ["-D", "OUTPUT", "-j", OUT6_CHAIN], f6 + ["-F", OUT6_CHAIN], f6 + ["-X", OUT6_CHAIN]]
     for chain in (UDP_CHAIN, DROP_CHAIN, SANDBOX_CHAIN):
@@ -789,6 +812,45 @@ def counters() -> dict:
             continue
         if p.returncode == 0:
             out[key] = parse_chain_counters(p.stdout)["packets"]
+    try:
+        p = _run(["iptables", "-w", "-t", "nat", "-L", CONNECT_CHAIN, "-v", "-x", "-n"])
+    except (OSError, subprocess.SubprocessError):
+        p = None
+    if p is not None and p.returncode == 0:
+        out["sandbox_connects"] = parse_connect_counter(p.stdout)
+    return out
+
+
+def parse_connect_counter(text: str) -> int:
+    """TCP connections from the sandbox straight to an IP address: pkts of the tcp RETURN rule in
+    `iptables -t nat -L RT_EGRESS_CONNECT -v -x -n` (the protocol is printed as a name or a number)."""
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0].isdigit() and parts[2] == "RETURN" and parts[3] in ("tcp", "6"):
+            return int(parts[0])
+    return 0
+
+
+def parse_connect_log(text: str, limit: int = 100) -> list:
+    """Kernel log lines of the nat connect rule -> [{proto, dst, dpt, uid}], one per connection."""
+    out = []
+    for line in text.splitlines():
+        i = line.find(CONNECT_LOG_PREFIX)
+        if i < 0:
+            continue
+        rest = line[i + len(CONNECT_LOG_PREFIX):]
+        rec = {}
+        for key in ("PROTO", "DST", "DPT", "UID"):
+            km = re.search(rf"\b{key}=(\S*)", rest)
+            if km:
+                rec[key.lower()] = km.group(1)
+        if not (rec.get("dst") and rec.get("proto") and (rec.get("dpt") or "").isdigit()):
+            continue
+        rec["proto"] = rec["proto"].lower()
+        rec["dpt"] = int(rec["dpt"])
+        out.append(rec)
+        if len(out) >= limit:
+            break
     return out
 
 

@@ -106,7 +106,7 @@ def test_iptables_rules_shape():
     assert any(c.endswith(f"-I OUTPUT 1 -j {egress.NAT_CHAIN}") for c in flat)
 
     plain = [" ".join(c) for c in egress.iptables_up_commands(["10.77.0.3"], sandbox_slice=None)]
-    assert not any("cgroup" in c or egress.SANDBOX_CHAIN in c for c in plain)
+    assert not any("cgroup" in c or egress.SANDBOX_CHAIN in c or egress.CONNECT_CHAIN in c for c in plain)
 
     six = [" ".join(c) for c in egress.ip6tables_up_commands()]
     o6 = [c for c in six if f"-A {egress.OUT6_CHAIN} " in c]
@@ -119,6 +119,80 @@ def test_iptables_rules_shape():
     with pytest.raises(ValueError):
         egress._allow_list("not-an-ip")
     assert egress._allow_list("10.77.0.3, 10.77.0.4") == ["10.77.0.3", "10.77.0.4"]
+
+
+def test_sandbox_connect_rules():
+    cmds = egress.iptables_up_commands(["10.77.0.3"])
+    flat = [" ".join(c) for c in cmds]
+    conn = [c for c in flat if f"-A {egress.CONNECT_CHAIN} " in c]
+    assert len(conn) == 2 and all(" -t nat " in c for c in conn)
+    assert "-m limit --limit 30/min --limit-burst 30 -j LOG" in conn[0]
+    assert "--log-prefix rt-egress sandbox-connect:  --log-uid" in conn[0]  # prefix ends with a space
+    assert conn[1].endswith("-p tcp -j RETURN")
+    assert len(egress.CONNECT_LOG_PREFIX) <= 29  # iptables limit for --log-prefix
+    # the chain exists before the jumps that use it
+    assert flat.index(f"iptables -w -t nat -N {egress.CONNECT_CHAIN}") < min(
+        i for i, c in enumerate(flat) if c.endswith(f"-j {egress.CONNECT_CHAIN}"))
+    nat = [c for c in flat if f"-A {egress.NAT_CHAIN} " in c]
+    jumps = [i for i, c in enumerate(nat) if c.endswith(f"-j {egress.CONNECT_CHAIN}")]
+    assert [nat[i].split(" -A RT_EGRESS_NAT ")[1] for i in jumps] == [
+        f"-p {p} -m cgroup --path rt.slice ! -d 198.18.0.0/15 -j {egress.CONNECT_CHAIN}" for p in ("tcp", "udp")]
+    # after DNS, local and allowed destinations; before the redirect to the recorder
+    assert all(i > nat.index(next(c for c in nat if "-d 10.77.0.3 -j RETURN" in c)) for i in jumps)
+    assert all(i > nat.index(next(c for c in nat if "--dst-type LOCAL -j RETURN" in c)) for i in jumps)
+    assert all(i > max(j for j, c in enumerate(nat) if "--dport 53" in c) for i in jumps)
+    assert max(jumps) < len(nat) - 1 and nat[-1].endswith("-p tcp -j REDIRECT --to-ports 15001")
+    # the excluded range is exactly the DNS stub's pool (names go through the recorder, not this rule)
+    import ipaddress
+    fake = ipaddress.ip_network(egress.FAKE_RANGE)
+    assert fake.network_address == ipaddress.ip_address(egress.FAKE_BASE)
+    assert fake.num_addresses == egress.FAKE_SIZE
+
+    down = [" ".join(c) for c in egress.iptables_down_commands()]
+    assert down.index(f"iptables -w -t nat -X {egress.NAT_CHAIN}") < down.index(
+        f"iptables -w -t nat -F {egress.CONNECT_CHAIN}") < down.index(f"iptables -w -t nat -X {egress.CONNECT_CHAIN}")
+
+
+def test_parse_connect_counter_and_log():
+    for prot in ("tcp", "6"):
+        text = ("Chain RT_EGRESS_CONNECT (2 references)\n"
+                "    pkts      bytes target     prot opt in     out     source               destination\n"
+                "       2      120 LOG        0    --  *      *       0.0.0.0/0            0.0.0.0/0    "
+                "limit: avg 30/min burst 30 LOG flags 8 level 4 prefix \"rt-egress sandbox-connect: \"\n"
+                f"       1       60 RETURN     {prot}  --  *      *       0.0.0.0/0            0.0.0.0/0\n")
+        assert egress.parse_connect_counter(text) == 1
+    assert egress.parse_connect_counter("") == 0
+
+    text = ("1730740000.100000 twin kernel: rt-egress sandbox-connect: IN= OUT=enp1s0 SRC=10.77.0.6 "
+            "DST=172.31.77.10 LEN=60 TOS=0x00 PREC=0x00 TTL=64 ID=1 DF PROTO=TCP SPT=40000 DPT=8080 WINDOW=64240 "
+            "RES=0x00 SYN URGP=0 UID=0 GID=0\n"
+            "1730740000.200000 twin kernel: rt-egress sandbox: IN= OUT=enp1s0 SRC=10.77.0.6 DST=192.0.2.9 LEN=29 "
+            "PROTO=UDP SPT=5000 DPT=9 LEN=9 UID=0 GID=0\n"
+            "1730740000.300000 twin kernel: rt-egress sandbox-connect: IN= OUT=enp1s0 SRC=10.77.0.6 "
+            "DST=172.31.77.10 LEN=46 PROTO=UDP SPT=5001 DPT=9998 LEN=26 UID=0 GID=0\n"
+            "1730740000.400000 twin kernel: rt-egress sandbox-connect: IN= OUT=enp1s0 garbage\n")
+    recs = egress.parse_connect_log(text)
+    assert recs == [{"proto": "tcp", "dst": "172.31.77.10", "dpt": 8080, "uid": "0"},
+                    {"proto": "udp", "dst": "172.31.77.10", "dpt": 9998, "uid": "0"}]
+    assert len(egress.parse_connect_log(text * 10, limit=3)) == 3
+    # the drop log (diagnosis) does not pick up connect lines, and the reverse
+    assert [r["chain"] for r in egress.parse_drop_log(text)] == ["sandbox"]
+
+
+def test_counters_include_sandbox_connects(monkeypatch):
+    class P:
+        def __init__(self, out):
+            self.returncode, self.stdout = 0, out
+
+    def fake_run(argv):
+        if argv[:4] == ["iptables", "-w", "-t", "nat"]:
+            assert argv[4:] == ["-L", egress.CONNECT_CHAIN, "-v", "-x", "-n"]
+            return P("       3      180 RETURN     6    --  *      *       0.0.0.0/0            0.0.0.0/0\n")
+        return P("       0        0 DROP       0    --  *      *       0.0.0.0/0            0.0.0.0/0\n")
+
+    monkeypatch.setattr(egress, "_run", fake_run)
+    out = egress.counters()
+    assert out["sandbox_connects"] == 3 and out["sandbox_packets"] == 0
 
 
 def test_parse_drop_log():

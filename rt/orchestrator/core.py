@@ -8,8 +8,11 @@
             out of scope -> input filter on ledger data -> planner.explain -> safer script
               -> next attempt on a NEW twin (at most 3 safer attempts)
             in scope, exit 0 -> production state version read -> awaiting_approval
-    approve(ledger_sha256, script_sha256, snapshot_id, prod_state_version)
-            any field off, golden snapshot changed or production changed -> Conflict (HTTP 409)
+    approve(ledger_sha256, script_sha256, snapshot_id, prod_state_version, files_sha256[, override_drift])
+            any field off, golden snapshot changed or production changed -> Conflict (HTTP 409);
+            companion files re-hashed (they are part of what was approved); a twin that did not start
+            from production's current data (snapshot_drift) -> 409 unless override_drift is true, and
+            the override is written into the receipt
     apply(): same tracer on production; before the script runs its state must still have the
             approved version -> ledger re-checked here -> compare(twin, prod) -> signed receipt
             -> "applied" only when production matched the rehearsal and its own verdict (computed
@@ -25,12 +28,18 @@ Every step appends an event to events.jsonl; the API streams it as SSE.
 
 Concurrency: rehearsals queue (FIFO) and at most RT_MAX_TWINS_ALIVE run at once, each holding
 at most one twin, leased so the reaper never takes it. Everything that touches production
-(state probe, approval probe, apply, restore) holds one production lock.
+(state probe, approval probe, apply, restore) holds one production lock. Production reserved
+for an apply or a restore also holds an exclusive flock on <data_dir>/prod.lock, from approve()
+to the end of apply() (or from reserve_restore() to the end of restore_prod()): a second control
+process on the same data dir (the CLI next to the API) gets Busy, never a second apply. The
+kernel drops the flock when the process dies.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
 import threading
 import time
 from collections import deque
@@ -50,7 +59,7 @@ from rt.twin.lifecycle import PROTECTED_TAGS, TWIN_TAG, Prod, Twin, has_public_i
 RUNNING = ("queued", "planning", "rehearsing", "reviewing", "applying")
 TERMINAL = ("failed", "no_safe_variant", "blocked_goal", "applied", "diverged", "apply_failed", "apply_aborted",
             "interrupted")
-APPROVAL_FIELDS = ("ledger_sha256", "script_sha256", "snapshot_id", "prod_state_version")
+APPROVAL_FIELDS = ("ledger_sha256", "script_sha256", "snapshot_id", "prod_state_version", "files_sha256")
 MAX_SCRIPT_CHARS = 20000
 MAX_GOAL_CHARS = 4000
 
@@ -73,6 +82,15 @@ class NotConfigured(Exception):
 
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def files_digest(hashes: dict[str, str]) -> str:
+    """One sha256 over the companion files' names and sha256 (sorted): what an approval binds."""
+    return sha256_hex(json.dumps(dict(sorted(hashes.items())), sort_keys=True, separators=(",", ":")).encode())
+
+
+class FilesChanged(RuntimeError):
+    """A stored companion file no longer has the hash recorded when the rehearsal was created."""
 
 
 def _err(e: BaseException) -> str:
@@ -123,6 +141,35 @@ class Orchestrator:
         self._active: set[str] = set()
         self._prod_lock = threading.RLock()
         self._prod_owner: str | None = None
+        self._prod_flock: int | None = None
+
+    # ------------------------------------------------------------------ production reservation
+    def _take_prod_flock(self, owner: str) -> None:
+        """Exclusive, non-blocking flock on <data_dir>/prod.lock (call with self._lock held)."""
+        path = self.s.data_dir / "prod.lock"
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise Busy("production is busy (another control process holds prod.lock)") from None
+        os.ftruncate(fd, 0)
+        os.write(fd, json.dumps({"owner": owner, "pid": os.getpid(), "since": utc_now()}).encode())
+        self._prod_flock = fd
+
+    def _drop_prod_flock(self) -> None:
+        fd, self._prod_flock = self._prod_flock, None
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    def _release_prod(self, owner: str) -> None:
+        with self._lock:
+            if self._prod_owner == owner:
+                self._prod_owner = None
+                self._drop_prod_flock()
 
     # ------------------------------------------------------------------ records and events
     def _emit(self, rid: str, type_: str, data: dict | None = None) -> None:
@@ -349,7 +396,12 @@ class Orchestrator:
             self.sleep(min(15.0, left))
 
     def _files(self, rec: dict) -> dict[str, bytes]:
-        return {k: self.store.read_file(rec["id"], f"file-{k}") for k in rec.get("files") or {}}
+        """The companion files, re-hashed against the hashes recorded at create(): never sent changed."""
+        files = {k: self.store.read_file(rec["id"], f"file-{k}") for k in rec.get("files") or {}}
+        changed = sorted(k for k, v in files.items() if sha256_hex(v) != rec["files"][k])
+        if changed:
+            raise FilesChanged("companion files changed since the rehearsal was created: " + ", ".join(changed))
+        return files
 
     def _rehearse_once(self, rec: dict, n: int, kind: str, script: str) -> dict:
         rid = rec["id"]
@@ -485,8 +537,10 @@ class Orchestrator:
         version, manifest, uptime = self._probe_prod(rec, "probe")
         self.store.write_json(rid, "prod-state-rehearsal.json", manifest)
         twin_manifest = self.store.read_json(rid, f"twin-state-{a['n']}.json")
+        files = self._files(rec)
         approval = {"ledger_sha256": a["ledger_sha256"], "script_sha256": a["script_sha256"],
-                    "snapshot_id": rec["snapshot_id"], "prod_state_version": version}
+                    "snapshot_id": rec["snapshot_id"], "prod_state_version": version,
+                    "files_sha256": files_digest({k: sha256_hex(v) for k, v in files.items()})}
         drift = remote.manifest_changes(twin_manifest, manifest)
         self._save(rec, approvable=a["n"], approval=approval, prod_uptime_s=uptime,
                    snapshot_matches_prod=a.get("twin_state_version") == version, snapshot_drift=drift)
@@ -507,9 +561,15 @@ class Orchestrator:
                 raise Conflict([f"rehearsal is {rec.get('status')}, not awaiting approval"])
             if self._prod_owner:
                 raise Busy(f"production is busy ({'restore' if self._prod_owner == 'restore' else 'apply'})")
-            appr = rec["approval"]
-            reasons = [f"{k} does not match the rehearsal" for k in APPROVAL_FIELDS
-                       if not isinstance(req.get(k), str) or req.get(k) != appr[k]]
+            # Records from before files_sha256 existed: the hashes recorded at create() stand in.
+            appr = {"files_sha256": files_digest(rec.get("files") or {}), **rec["approval"]}
+            reasons = []
+            for k in APPROVAL_FIELDS:
+                given = req.get(k)
+                if k == "files_sha256" and given is None and not rec.get("files"):
+                    continue  # no companion files: a client that does not send the field binds nothing less
+                if not isinstance(given, str) or given != appr[k]:
+                    reasons.append(f"{k} does not match the rehearsal")
             if rec["snapshot_id"] != self.s.snapshot_id:
                 reasons.append("snapshot_id: the golden snapshot changed since the rehearsal")
             n = rec["approvable"]
@@ -518,9 +578,22 @@ class Orchestrator:
                 reasons.append("ledger_sha256: the stored ledger no longer gives the approved hash")
             if sha256_hex(self.store.read_file(rid, f"attempt-{n}.sh")) != appr["script_sha256"]:
                 reasons.append("script_sha256: the stored script no longer gives the approved hash")
+            try:
+                stored = {k: sha256_hex(v) for k, v in self._files(rec).items()}
+            except (FilesChanged, OSError, UnknownRehearsal) as e:
+                stored = None
+                reasons.append(f"files_sha256: {e}")
+            if stored is not None and files_digest(stored) != appr["files_sha256"]:
+                reasons.append("files_sha256: the stored companion files no longer give the approved hash")
+            drift = rec.get("snapshot_drift") or []
+            override = req.get("override_drift") is True
+            if drift and not override:
+                reasons.append(f"snapshot_drift: the twin did not start from production's current data "
+                               f"({len(drift)} changes); approve with override_drift: true to accept that")
             if reasons:
                 self._emit(rid, "approval_refused", {"reasons": reasons})
                 raise Conflict(reasons)
+            self._take_prod_flock(rid)  # Busy when another control process has production
             self._prod_owner = rid
         try:
             if not self._prod_lock.acquire(timeout=10):
@@ -536,14 +609,15 @@ class Orchestrator:
                 self._emit(rid, "approval_refused", {"reasons": reasons})
                 raise Conflict(reasons)
             rec = self.store.load(rid)
-            self._save(rec, approved={**{k: req[k] for k in APPROVAL_FIELDS}, "approved_at": utc_now()},
+            approved = {k: appr[k] for k in APPROVAL_FIELDS}  # every field equals the request, checked above
+            if drift:
+                approved.update(override_drift=True, snapshot_drift=drift)
+            self._save(rec, approved={**approved, "approved_at": utc_now()},
                        apply={"status": "applying"}, status="applying")
-            self._emit(rid, "approved", {k: req[k] for k in APPROVAL_FIELDS})
+            self._emit(rid, "approved", approved)
             return rec
         except BaseException:
-            with self._lock:
-                if self._prod_owner == rid:
-                    self._prod_owner = None
+            self._release_prod(rid)
             raise
 
     def apply(self, rid: str) -> dict:
@@ -557,12 +631,16 @@ class Orchestrator:
             script = self.store.read_file(rid, f"attempt-{n}.sh")
             if sha256_hex(script) != rec["approved"]["script_sha256"]:
                 raise RuntimeError("stored script does not match the approved hash")
+            files = self._files(rec)  # exactly these bytes go to production and into the receipt
+            sent = {k: sha256_hex(v) for k, v in sorted(files.items())}
+            if files_digest(sent) != rec["approved"].get("files_sha256", files_digest(rec.get("files") or {})):
+                raise FilesChanged("companion files do not match the approved files_sha256")
             self._emit(rid, "step", {"step": "apply"})
             self._prod_lock.acquire()
             try:
                 prod = self._prod()
                 result = remote.trace(
-                    prod, f"{rid}-apply", script, rec["scope"], self._files(rec), wall_s=self.s.wall_s,
+                    prod, f"{rid}-apply", script, rec["scope"], files, wall_s=self.s.wall_s,
                     mem=self.s.mem, pids=self.s.pids,
                     on_phase=lambda ph, info: self._emit(rid, "trace", {"where": "prod", "phase": ph, **info}),
                     expect_version=rec["approved"]["prod_state_version"],
@@ -601,7 +679,7 @@ class Orchestrator:
                                         "outcome": rec["apply"]["outcome"]})
             self._emit(rid, "step", {"step": "compare"})
             self._collect_llm(rec, llm_mark)
-            receipt = self._receipt(rec, twin_ledger, prod_ledger, cmp, script)
+            receipt = self._receipt(rec, twin_ledger, prod_ledger, cmp, script, sent)
             self.store.write_json(rid, "receipt.json", receipt)
             sig = receipt.get("signature") or {}
             self._save(rec, receipt={"key_id": sig.get("key_id"), "signed": bool(sig),
@@ -620,9 +698,7 @@ class Orchestrator:
             self._emit(rid, "error", {"message": _err(e)})
         finally:
             rec = self._reload(rec)
-            with self._lock:
-                if self._prod_owner == rid:
-                    self._prod_owner = None
+            self._release_prod(rid)
             self._emit_view(rec)
             self._emit(rid, "done", {"status": rec["status"]})
         return rec
@@ -631,7 +707,8 @@ class Orchestrator:
         self.approve(rid, req)
         return self.apply(rid)
 
-    def _receipt(self, rec: dict, twin_ledger: dict, prod_ledger: dict, cmp: dict, script: bytes) -> dict:
+    def _receipt(self, rec: dict, twin_ledger: dict, prod_ledger: dict, cmp: dict, script: bytes,
+                 files_sent: dict[str, str]) -> dict:
         from rt.receipts.sign import canonical
         limits = prod_ledger.get("limits") or {}
         body = {
@@ -641,11 +718,14 @@ class Orchestrator:
             "issued_at": utc_now(),
             "source": rec["source"],
             "preset": rec.get("preset"),
-            "script": {"name": rec["name"], "sha256": sha256_hex(script), "files": rec.get("files") or {}},
+            "script": {"name": rec["name"], "sha256": sha256_hex(script), "files": files_sent,
+                       "files_sha256": files_digest(files_sent)},
             "scope": rec["scope"],
             "snapshot_id": rec["snapshot_id"],
             "prod_instance_id": rec["prod_instance_id"],
             "approval": rec["approved"],
+            "snapshot_drift": {"changes": rec.get("snapshot_drift") or [],
+                               "overridden": bool(rec["approved"].get("override_drift"))},
             "attempts": [{"n": a["n"], "kind": a["kind"], "twin_id": a["twin"].get("id"),
                           "twin_label": a["twin"].get("label"), "twin_destroyed": a["twin"].get("destroyed"),
                           "ledger_sha256": a.get("ledger_sha256"), "verdict": a.get("verdict"),
@@ -775,6 +855,12 @@ class Orchestrator:
                 busy = self.open_rehearsals()
                 if busy:
                     return {"status": "skipped", "reason": "rehearsals are open", "open": busy}
+            try:
+                self._take_prod_flock("restore")
+            except Busy as e:
+                if only_if_idle:
+                    return {"status": "skipped", "reason": str(e)}
+                raise
             self._prod_owner = "restore"
         return None
 
@@ -798,9 +884,7 @@ class Orchestrator:
             self._set_prod_status(status="error", error=_err(e))
             raise
         finally:
-            with self._lock:
-                if self._prod_owner == "restore":
-                    self._prod_owner = None
+            self._release_prod("restore")
 
     def _rebase_after_restore(self) -> dict:
         """Re-read production's state version for every rehearsal awaiting approval.

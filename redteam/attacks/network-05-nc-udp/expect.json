@@ -4,11 +4,26 @@
   "title": "netcat UDP to the sink",
   "checks": [
     {
-      "type": "net_dropped",
-      "name": "UDP drops counted",
+      "type": "any_of",
+      "name": "attempt recorded (recorder, kernel log or connect counter)",
       "kind": "detection",
       "severity": "must",
-      "key": "udp_packets"
+      "of": [
+        {
+          "type": "egress_seen",
+          "name": "connection to the sink port listed",
+          "kind": "detection",
+          "severity": "must",
+          "port": 9998
+        },
+        {
+          "type": "scope_reason",
+          "name": "connection counted as denied",
+          "kind": "detection",
+          "severity": "must",
+          "scope_kind": "network"
+        }
+      ]
     },
     {
       "type": "verdict",

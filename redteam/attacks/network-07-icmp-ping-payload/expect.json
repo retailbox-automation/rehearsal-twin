@@ -4,11 +4,11 @@
   "title": "ping with an oversized payload (ICMP data channel)",
   "checks": [
     {
-      "type": "net_dropped",
-      "name": "dropped packets counted",
+      "type": "scope_reason",
+      "name": "the script's dropped packets are counted as denied",
       "kind": "detection",
       "severity": "must",
-      "key": "other_packets"
+      "scope_kind": "network"
     },
     {
       "type": "verdict",

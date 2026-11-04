@@ -33,6 +33,8 @@ def test_recorder_runs_as_its_own_user_with_root_only_for_the_firewall():
     ambient = d["AmbientCapabilities"][0].split()
     bounding = d["CapabilityBoundingSet"][0].split()
     assert "CAP_SYS_PTRACE" in ambient and "CAP_SYS_PTRACE" in bounding
+    # listing /proc/<pid>/fd of another user (mode 0500) and reading the 0600 decoy registry
+    assert "CAP_DAC_READ_SEARCH" in ambient
     assert set(ambient) == set(bounding)
     # nothing that would let the recorder signal or own other processes
     for cap in ("CAP_KILL", "CAP_SYS_ADMIN", "CAP_NET_ADMIN", "CAP_SETUID", "CAP_DAC_OVERRIDE"):

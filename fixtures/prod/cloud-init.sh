@@ -272,9 +272,11 @@ ExecStartPre=+/opt/rt/bin/rt-egress iptables-up
 ExecStart=/opt/rt/bin/rt-egress serve
 User=rt-egress
 Group=rt-egress
-# Attribution reads /proc/<pid>/fd of processes of other users (the script, shop-webhooks).
-AmbientCapabilities=CAP_SYS_PTRACE
-CapabilityBoundingSet=CAP_SYS_PTRACE
+# Attribution reads /proc/<pid>/fd of processes of other users (the script, shop-webhooks):
+# the directory is mode 0500 owned by that user (CAP_DAC_READ_SEARCH to list it) and each link
+# needs ptrace read access (CAP_SYS_PTRACE). The decoy registry /opt/rt/canaries.json is 0600 root.
+AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
 NoNewPrivileges=yes
 Restart=always
 RestartSec=1

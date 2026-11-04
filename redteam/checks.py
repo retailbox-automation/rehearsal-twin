@@ -138,6 +138,18 @@ def run_check(chk: dict, ctx: dict):
     if t == "file_count_min":
         n = len([1 for o, p in _flat_files(led, chk.get("op")) if p.startswith(chk["prefix"])])
         return n >= chk["min"], f"{n} {chk.get('op') or 'changed'} files under {chk['prefix']}"
+    if t == "dir_listed":
+        # directory change (created/modified/deleted) in the ledger's dirs map; an entry is either a
+        # path string or a dict carrying the path plus mode/uid/gid (shared interface, finding 8 fix)
+        dirs = led.get("dirs") or {}
+        ops = [chk["op"]] if chk.get("op") else ("modified", "created", "deleted")
+        for o in ops:
+            for e in dirs.get(o) or []:
+                p = e.get("path") if isinstance(e, dict) else e
+                if p == chk["path"]:
+                    return True, f"dir {o} {p}"
+        return False, (f"dir {chk.get('op') or 'any'} {chk['path']} not in the ledger; "
+                       f"dirs={ {k: len(v or []) for k, v in dirs.items()} }")
     if t == "rows":
         ch = (led.get("rows") or {}).get(chk["table"]) or {}
         got = ch.get(chk["field"])

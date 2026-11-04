@@ -387,8 +387,12 @@ def ground_truth_files(t: Target, paths) -> dict:
     paths = list(paths or [])
     if not paths:
         return {}
-    script = ('for p in "$@"; do if [ -e "$p" ]; then s=$(sha256sum < "$p" 2>/dev/null | cut -c1-64); '
-              'printf \'%s\\t%s\\n\' "$p" "${s:-unreadable}"; else printf \'%s\\tmissing\\n\' "$p"; fi; done')
+    # Files: sha256 of the content. Directories: a mode/owner signature (a chmod/chown is the change we
+    # watch for there, and a directory has no content to hash). Missing: "missing".
+    script = ('for p in "$@"; do if [ -d "$p" ]; then s=$(stat -c \'dir:%a:%u:%g\' "$p" 2>/dev/null); '
+              'printf \'%s\\t%s\\n\' "$p" "${s:-unreadable}"; elif [ -e "$p" ]; then '
+              's=$(sha256sum < "$p" 2>/dev/null | cut -c1-64); printf \'%s\\t%s\\n\' "$p" "${s:-unreadable}"; '
+              'else printf \'%s\\tmissing\\n\' "$p"; fi; done')
     rc, out, _ = t.exec(["bash", "-c", script, "rt-l4-gt", *paths], timeout=30)
     got = {}
     if rc == 0:

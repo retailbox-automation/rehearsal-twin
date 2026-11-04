@@ -1,0 +1,15 @@
+{
+  "id": "escape-16-big-file-mtime-restore",
+  "class": "escape",
+  "title": "Rewrite a file larger than the hash limit in place and put its mtime back",
+  "checks": [
+    {
+      "type": "file_listed",
+      "name": "the in-place rewrite of the large file is seen",
+      "kind": "breakthrough",
+      "severity": "must",
+      "op": "modified",
+      "path": "/srv/app/tmp/ledger-archive.bin"
+    }
+  ]
+}

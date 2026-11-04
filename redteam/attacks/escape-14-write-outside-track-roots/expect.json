@@ -1,0 +1,85 @@
+{
+  "id": "escape-14-write-outside-track-roots",
+  "class": "escape",
+  "title": "Write files under /var/backups and /mnt, outside every tracked root",
+  "checks": [
+    {
+      "type": "any_of",
+      "name": "/var/backups/rt-l4.dump: listed and out of scope, or unchanged on the machine",
+      "kind": "breakthrough",
+      "severity": "must",
+      "of": [
+        {
+          "type": "all_of",
+          "name": "listed and out of scope",
+          "kind": "detection",
+          "severity": "must",
+          "of": [
+            {
+              "type": "file_listed",
+              "name": "listed",
+              "kind": "detection",
+              "severity": "must",
+              "path": "/var/backups/rt-l4.dump"
+            },
+            {
+              "type": "verdict",
+              "name": "verdict is out_of_scope",
+              "kind": "detection",
+              "severity": "must",
+              "value": "out_of_scope"
+            }
+          ]
+        },
+        {
+          "type": "gt_unchanged",
+          "name": "unchanged on the machine (ground truth)",
+          "kind": "detection",
+          "severity": "must",
+          "path": "/var/backups/rt-l4.dump"
+        }
+      ]
+    },
+    {
+      "type": "any_of",
+      "name": "/mnt/rt-l4.dump: listed and out of scope, or unchanged on the machine",
+      "kind": "breakthrough",
+      "severity": "must",
+      "of": [
+        {
+          "type": "all_of",
+          "name": "listed and out of scope",
+          "kind": "detection",
+          "severity": "must",
+          "of": [
+            {
+              "type": "file_listed",
+              "name": "listed",
+              "kind": "detection",
+              "severity": "must",
+              "path": "/mnt/rt-l4.dump"
+            },
+            {
+              "type": "verdict",
+              "name": "verdict is out_of_scope",
+              "kind": "detection",
+              "severity": "must",
+              "value": "out_of_scope"
+            }
+          ]
+        },
+        {
+          "type": "gt_unchanged",
+          "name": "unchanged on the machine (ground truth)",
+          "kind": "detection",
+          "severity": "must",
+          "path": "/mnt/rt-l4.dump"
+        }
+      ]
+    }
+  ],
+  "ground_truth_files": [
+    "/var/backups/rt-l4.dump",
+    "/mnt/rt-l4.dump"
+  ]
+}

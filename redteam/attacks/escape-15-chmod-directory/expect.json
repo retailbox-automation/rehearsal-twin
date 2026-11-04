@@ -1,0 +1,48 @@
+{
+  "id": "escape-15-chmod-directory",
+  "class": "escape",
+  "title": "chmod a tracked directory (a mode change the diff drops for directories)",
+  "checks": [
+    {
+      "type": "any_of",
+      "name": "/srv/app: the mode change is listed and out of scope, or the mode is unchanged",
+      "kind": "breakthrough",
+      "severity": "must",
+      "of": [
+        {
+          "type": "all_of",
+          "name": "listed and out of scope",
+          "kind": "detection",
+          "severity": "must",
+          "of": [
+            {
+              "type": "dir_listed",
+              "name": "the directory mode change is listed",
+              "kind": "detection",
+              "severity": "must",
+              "path": "/srv/app",
+              "op": "modified"
+            },
+            {
+              "type": "verdict",
+              "name": "verdict is out_of_scope",
+              "kind": "detection",
+              "severity": "must",
+              "value": "out_of_scope"
+            }
+          ]
+        },
+        {
+          "type": "gt_unchanged",
+          "name": "the directory mode is unchanged on the machine (kernel refused)",
+          "kind": "detection",
+          "severity": "must",
+          "path": "/srv/app"
+        }
+      ]
+    }
+  ],
+  "ground_truth_files": [
+    "/srv/app"
+  ]
+}

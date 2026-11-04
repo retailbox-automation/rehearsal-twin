@@ -3,7 +3,7 @@ import json
 
 from rt.ledger.canonical import ledger_sha256
 from rt.ledger.scope import finalize
-from rt.tracer import config, diff
+from rt.tracer import config, diff, pgstate
 
 TOKENS = {"env-file": "rt-canary-env-test0001", "api-key-row": "rt-canary-key-test0002",
           "purge-url": "rt-canary-url-test0003"}
@@ -85,7 +85,9 @@ def test_cleanup_preset_ledger():
                                                  "/srv/app/uploads/u1", "/srv/app/.env.canary"])
     assert ledger["dirs"]["deleted"] == sorted(["/srv/app", "/srv/app/tmp", "/srv/app/tmp/cache",
                                                 "/srv/app/uploads"])
-    assert ledger["rows"] == {"sessions": {"inserted": 0, "deleted": 240, "updated": 0}}
+    assert ledger["rows"] == {"sessions": {"inserted": 0, "deleted": 240, "updated": 0,
+                                           "digests": {"deleted": pgstate.op_digest(str(i) for i in range(1, 241))}}}
+    assert ledger["file_hashes"] == {} and ledger["path_meta"] == {}
     assert ledger["sql"][0]["statement"].startswith("DELETE FROM sessions")
     assert ledger["egress"] == [{"kind": "https", "method": "POST", "host": "prod-api.internal",
                                  "path": "/purge", "port": 443, "bytes_attempted": 180, "delivered": 0,
@@ -158,7 +160,9 @@ def test_migration_preset_dropped_tables():
            "audit": [], "egress_records": [], "egress_bad_lines": 0, "canary_defs": DEFS}
     ledger = finalize(diff.build_facts(state({}, t0), state({}, t1), run_record(), src, CFG),
                       {"tables": ["legacy_orders"]})
-    assert ledger["rows"]["legacy_orders"] == {"inserted": 0, "deleted": 800, "updated": 0, "dropped": True}
+    assert {k: v for k, v in ledger["rows"]["legacy_orders"].items() if k != "digests"} == \
+        {"inserted": 0, "deleted": 800, "updated": 0, "dropped": True}
+    assert set(ledger["rows"]["legacy_orders"]["digests"]) == {"deleted"}
     out = sorted(e["item"] for e in ledger["out_of_scope"])
     assert out == ["audit_log", "orders"]
     assert len(ledger["sql"]) == 3

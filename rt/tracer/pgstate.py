@@ -1,30 +1,80 @@
 """Postgres state: per table row hashes (keyed by primary key) and a schema digest.
 
-Only `psql` is needed on the machine. The tracer's own session runs with
-log_statement=none and application_name=rtrace, so it never shows up in sql[].
+Only `psql` is needed on the machine. The tracer connects as its own role `rtrace` (peer
+authentication from the OS user rtrace, member of pg_read_all_data, BYPASSRLS). A rehearsal
+script cannot become that OS user (the sandbox has no CAP_SETUID), so sql[] drops the statements
+of that role by user name, never by application_name, which any client sets freely.
+
+Table names never reach the psql lexer. The text sent to psql (SNAPSHOT_SCRIPT) is the same for
+every database: one catalog query lists the tables with every name hex-encoded, a second one
+builds the per-table SELECTs on the server with format('%I.%I') and `\\gexec` sends each built
+statement straight to the server. A table named `orders \\! touch /x` is data, not a psql
+meta-command, and rows are attributed to their table by OID, not by a printed name.
+
+Every output line is `tag SEP field ...` where each field is hex, digits or empty, so no name can
+add a line or a field. The session pins search_path and the output settings first: the database
+owner can change their defaults (ALTER DATABASE ... SET), which would otherwise change the
+functions this query calls or the text form of every row.
 """
 from __future__ import annotations
 
+import hashlib
+import re
 import subprocess
 from collections import Counter
 
 SEP = "\x1f"
+# Names with these characters are traced like any other table and reported as an integrity issue.
+UNSAFE_NAME = re.compile(r"[\\\x00-\x1f\x7f]")
+_SIMPLE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
-LIST_TABLES_SQL = r"""
-SELECT n.nspname, c.relname,
-  coalesce((SELECT string_agg(quote_ident(a.attname), ',' ORDER BY array_position(i.indkey::int2[], a.attnum))
-            FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-            WHERE i.indrelid = c.oid AND i.indisprimary), ''),
-  md5(coalesce((SELECT string_agg(a.attname || ':' || format_type(a.atttypid, a.atttypmod), ',' ORDER BY a.attnum)
-                FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped), '')
-      || '|' ||
-      coalesce((SELECT string_agg(t.tgname, ',' ORDER BY t.tgname)
-                FROM pg_trigger t WHERE t.tgrelid = c.oid AND NOT t.tgisinternal), ''))
-FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE c.relkind IN ('r', 'p')
-  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND n.nspname NOT LIKE 'pg_toast%'
-ORDER BY 1, 2;
+_TABLES_CTE = r"""WITH tbl AS (
+  SELECT c.oid, c.relkind, n.nspname, c.relname,
+    (SELECT array_agg(a.attname ORDER BY array_position(i.indkey::int2[], a.attnum))
+       FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+      WHERE i.indrelid = c.oid AND i.indisprimary) AS pk
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE c.relkind IN ('r', 'p')
+    AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+    AND n.nspname NOT LIKE 'pg_toast%'
+)"""
+
+SNAPSHOT_SCRIPT = r"""SET search_path = pg_catalog;
+SET row_security = off;
+SET statement_timeout = 0;
+SET TimeZone = 'UTC';
+SET DateStyle = 'ISO, MDY';
+SET IntervalStyle = 'postgres';
+SET extra_float_digits = 1;
+SET bytea_output = 'hex';
+SET lc_monetary = 'C';
+BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+""" + _TABLES_CTE + r"""
+SELECT 'T', tbl.oid, tbl.relkind,
+  encode(convert_to(tbl.nspname, 'UTF8'), 'hex'),
+  encode(convert_to(tbl.relname, 'UTF8'), 'hex'),
+  encode(convert_to(coalesce((SELECT string_agg(quote_ident(x), ',' ORDER BY o)
+                                FROM unnest(tbl.pk) WITH ORDINALITY u(x, o)), ''), 'UTF8'), 'hex'),
+  encode(sha256(convert_to(
+    coalesce((SELECT string_agg(a.attname || ':' || format_type(a.atttypid, a.atttypmod), ',' ORDER BY a.attnum)
+                FROM pg_attribute a WHERE a.attrelid = tbl.oid AND a.attnum > 0 AND NOT a.attisdropped), '')
+    || '|' ||
+    coalesce((SELECT string_agg(t.tgname, ',' ORDER BY t.tgname)
+                FROM pg_trigger t WHERE t.tgrelid = tbl.oid AND NOT t.tgisinternal), ''), 'UTF8')), 'hex')
+FROM tbl ORDER BY tbl.nspname, tbl.relname;
+""" + _TABLES_CTE + r"""
+SELECT format('SELECT ''R'', %s, %s, encode(sha256(convert_to(ROW(t.*)::text, ''UTF8'')), ''hex'') FROM %s %I.%I t',
+  tbl.oid,
+  CASE WHEN tbl.pk IS NULL THEN 'NULL'
+       ELSE format('encode(sha256(convert_to((%s)::text, ''UTF8'')), ''hex'')',
+                   CASE WHEN array_length(tbl.pk, 1) = 1 THEN 't.' || quote_ident(tbl.pk[1])
+                        ELSE 'ROW(' || (SELECT string_agg('t.' || quote_ident(x), ', ' ORDER BY o)
+                                          FROM unnest(tbl.pk) WITH ORDINALITY u(x, o)) || ')' END) END,
+  CASE WHEN tbl.relkind = 'r' THEN 'ONLY' ELSE '' END,
+  tbl.nspname, tbl.relname)
+FROM tbl ORDER BY tbl.nspname, tbl.relname
+\gexec
+COMMIT;
 """
 
 
@@ -34,7 +84,7 @@ class PgError(RuntimeError):
 
 def psql_argv(cfg: dict) -> list:
     pg = cfg.get("pg") or {}
-    conninfo = f"dbname={pg.get('dbname', 'shop')} application_name=rtrace options='-c log_statement=none'"
+    conninfo = f"dbname={pg.get('dbname', 'shop')} application_name=rtrace"
     argv = ["psql", "-X", "-q", "-At", "-F", SEP, "-v", "ON_ERROR_STOP=1", conninfo]
     run_as = pg.get("run_as")
     if run_as:
@@ -49,66 +99,64 @@ def run_psql(script: str, cfg: dict, timeout: int = 120) -> str:
     return p.stdout
 
 
-def _qi(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
+def _ident(name: str) -> str:
+    return name if _SIMPLE.match(name) else '"' + name.replace('"', '""') + '"'
 
 
 def table_key(schema: str, name: str) -> str:
-    return name if schema == "public" else f"{schema}.{name}"
+    """`name` for a plain lower-case table in public, else `schema.name` with each part quoted when needed.
+
+    One key per table: `public."billing.invoices"` and `billing.invoices` stay apart.
+    """
+    if schema == "public" and _SIMPLE.match(name):
+        return name
+    return f"{_ident(schema)}.{_ident(name)}"
 
 
-def parse_table_list(out: str) -> list:
-    tables = []
+def _hex(field: str) -> str:
+    try:
+        return bytes.fromhex(field).decode("utf-8", "replace")
+    except ValueError:
+        raise PgError(f"bad hex field: {field[:80]!r}") from None
+
+
+def parse_snapshot(out: str) -> tuple[dict, list]:
+    """psql output of SNAPSHOT_SCRIPT -> ({key: table entry}, [keys of tables with unsafe names])."""
+    by_oid: dict[str, dict] = {}
+    keys: dict[str, str] = {}
+    unsafe = []
     for line in out.splitlines():
-        if not line.strip():
+        if not line:
             continue
         parts = line.split(SEP)
-        if len(parts) != 4:
-            raise PgError(f"unexpected table list line: {line[:200]!r}")
-        schema, name, pk, schema_md5 = parts
-        tables.append({"schema": schema, "name": name, "pk": pk, "schema_md5": schema_md5})
-    return tables
-
-
-def rows_script(tables: list) -> str:
-    lines = []
-    for t in tables:
-        q = f"{_qi(t['schema'])}.{_qi(t['name'])}"
-        key = table_key(t["schema"], t["name"])
-        lines.append(f"\\echo @@T {key}")
-        if t["pk"]:
-            cols = [c.strip() for c in t["pk"].split(",")]
-            pk_expr = f"t.{cols[0]}" if len(cols) == 1 else "ROW(" + ", ".join(f"t.{c}" for c in cols) + ")"
-            lines.append(f"SELECT md5(({pk_expr})::text), md5(t::text) FROM {q} t;")
-        else:
-            lines.append(f"SELECT '', md5(t::text) FROM {q} t;")
-    return "\n".join(lines) + "\n"
-
-
-def parse_rows(out: str, tables: list) -> dict:
-    meta = {table_key(t["schema"], t["name"]): t for t in tables}
-    result = {}
-    current = None
-    for line in out.splitlines():
-        if line.startswith("@@T "):
-            current = line[4:].strip()
-            t = meta[current]
-            result[current] = {"pk": t["pk"], "schema": t["schema_md5"], "count": 0}
-            if t["pk"]:
-                result[current]["rows"] = {}
+        tag = parts[0]
+        if tag == "T":
+            if len(parts) != 7 or not parts[1].isdigit():
+                raise PgError(f"unexpected table line: {line[:200]!r}")
+            _, oid, _kind, schema_h, name_h, pk_h, schema_digest = parts
+            schema, name = _hex(schema_h), _hex(name_h)
+            key = table_key(schema, name)
+            if key in keys.values() or oid in by_oid:
+                raise PgError(f"duplicate table key {key!r}")
+            pk = _hex(pk_h)
+            entry = {"pk": pk, "schema": schema_digest, "count": 0}
+            entry["rows" if pk else "multiset"] = {}
+            by_oid[oid] = entry
+            keys[oid] = key
+            if UNSAFE_NAME.search(schema) or UNSAFE_NAME.search(name):
+                unsafe.append(key)
+        elif tag == "R":
+            if len(parts) != 4 or parts[1] not in by_oid:
+                raise PgError(f"unexpected row line: {line[:200]!r}")
+            entry = by_oid[parts[1]]
+            entry["count"] += 1
+            if "rows" in entry:
+                entry["rows"][parts[2]] = parts[3]
             else:
-                result[current]["multiset"] = {}
-            continue
-        if current is None or not line:
-            continue
-        key, _, row = line.partition(SEP)
-        entry = result[current]
-        entry["count"] += 1
-        if "rows" in entry:
-            entry["rows"][key] = row
+                entry["multiset"][parts[3]] = entry["multiset"].get(parts[3], 0) + 1
         else:
-            entry["multiset"][row] = entry["multiset"].get(row, 0) + 1
-    return result
+            raise PgError(f"unexpected line: {line[:200]!r}")
+    return {keys[oid]: by_oid[oid] for oid in by_oid}, sorted(unsafe)
 
 
 def snapshot(cfg: dict, runner=run_psql) -> dict:
@@ -116,11 +164,13 @@ def snapshot(cfg: dict, runner=run_psql) -> dict:
     if not pg.get("enabled", True):
         return {"ok": False, "error": "disabled", "tables": {}}
     try:
-        tables = parse_table_list(runner(LIST_TABLES_SQL, cfg))
-        rows = parse_rows(runner(rows_script(tables), cfg), tables) if tables else {}
-        return {"ok": True, "tables": rows}
+        tables, unsafe = parse_snapshot(runner(SNAPSHOT_SCRIPT, cfg))
     except (PgError, OSError, subprocess.SubprocessError) as exc:
         return {"ok": False, "error": str(exc)[:500], "tables": {}}
+    out = {"ok": True, "tables": tables}
+    if unsafe:
+        out["unsafe_names"] = unsafe
+    return out
 
 
 def _multiset(entry: dict) -> Counter:
@@ -129,29 +179,60 @@ def _multiset(entry: dict) -> Counter:
     return Counter(entry.get("rows", {}).values())
 
 
+def op_digest(items) -> str:
+    """sha256 hex over the sorted per-row items of one operation, one item per line."""
+    return hashlib.sha256("\n".join(sorted(items)).encode()).hexdigest()
+
+
+def _digests(ins: list, dele: list, upd: list) -> dict:
+    out = {}
+    for op, items in (("inserted", ins), ("deleted", dele), ("updated", upd)):
+        if items:
+            out[op] = op_digest(items)
+    return out
+
+
+def _all_items(entry: dict) -> list:
+    if "rows" in entry:
+        return list(entry["rows"])
+    return list(_multiset(entry).elements())
+
+
 def diff_tables(t0: dict, t1: dict) -> dict:
-    """Per table {inserted, deleted, updated} plus dropped/created/schema_changed flags."""
+    """Per table {inserted, deleted, updated} plus dropped/created/schema_changed flags.
+
+    `digests` says which rows: per operation the op_digest of its items. A row is its key (sha256 of
+    the primary key text) or, without a primary key, sha256 of the row text; an update is
+    "<key>:<sha256 of the new row text>". Both hashes are computed by Postgres in the snapshot.
+    """
     out = {}
     for name in sorted(set(t0) | set(t1)):
         a, b = t0.get(name), t1.get(name)
         if a is None:
-            ch = {"inserted": b.get("count", 0), "deleted": 0, "updated": 0, "created": True}
+            items = _all_items(b)
+            ch = {"inserted": len(items), "deleted": 0, "updated": 0, "created": True}
+            dig = _digests(items, [], [])
         elif b is None:
-            ch = {"inserted": 0, "deleted": a.get("count", 0), "updated": 0, "dropped": True}
+            items = _all_items(a)
+            ch = {"inserted": 0, "deleted": len(items), "updated": 0, "dropped": True}
+            dig = _digests([], items, [])
         else:
             if "rows" in a and "rows" in b and a.get("pk") == b.get("pk"):
                 ra, rb = a["rows"], b["rows"]
-                ins = len(rb.keys() - ra.keys())
-                dele = len(ra.keys() - rb.keys())
-                upd = sum(1 for k in ra.keys() & rb.keys() if ra[k] != rb[k])
+                ins = sorted(rb.keys() - ra.keys())
+                dele = sorted(ra.keys() - rb.keys())
+                upd = [f"{k}:{rb[k]}" for k in sorted(ra.keys() & rb.keys()) if ra[k] != rb[k]]
             else:
                 ma, mb = _multiset(a), _multiset(b)
-                ins = sum((mb - ma).values())
-                dele = sum((ma - mb).values())
-                upd = 0
-            ch = {"inserted": ins, "deleted": dele, "updated": upd}
+                ins = list((mb - ma).elements())
+                dele = list((ma - mb).elements())
+                upd = []
+            ch = {"inserted": len(ins), "deleted": len(dele), "updated": len(upd)}
             if a.get("schema") != b.get("schema"):
                 ch["schema_changed"] = True
+            dig = _digests(ins, dele, upd)
         if any(ch.values()):
+            if dig:
+                ch["digests"] = dig
             out[name] = ch
     return out

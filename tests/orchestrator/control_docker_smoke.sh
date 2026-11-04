@@ -17,8 +17,16 @@ docker build -q -t "$IMG" - >/dev/null <<'EOF'
 FROM ubuntu:24.04
 RUN apt-get update -q \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
-    systemd systemd-sysv dbus procps iproute2 ca-certificates curl
+    systemd systemd-sysv dbus procps iproute2 ca-certificates curl \
+ && for u in systemd-binfmt.service proc-sys-fs-binfmt_misc.automount proc-sys-fs-binfmt_misc.mount; do \
+      ln -sf /dev/null "/etc/systemd/system/$u"; done
 EOF
+# A privileged systemd container shares the Docker VM's binfmt_misc: systemd-binfmt would flush every
+# entry of the VM (Rosetta x86_64 included) at boot. Masked in the image; never start without the mask.
+for u in systemd-binfmt.service proc-sys-fs-binfmt_misc.automount proc-sys-fs-binfmt_misc.mount; do
+  [ "$(docker run --rm --network none --entrypoint readlink "$IMG" "/etc/systemd/system/$u")" = /dev/null ] \
+    || { echo "refusing to start: $u is not masked in $IMG" >&2; exit 3; }
+done
 docker run -d --name "$NAME" --privileged --cgroupns=private --tmpfs /run --tmpfs /run/lock \
   -v "$ROOT:/src:ro" "$IMG" /lib/systemd/systemd >/dev/null
 state=""

@@ -11,6 +11,8 @@ be able to undo it:
   the fake range is allowed so the rewritten replies are accepted on the way back.
 * no CAP_NET_ADMIN / CAP_NET_RAW / CAP_SYS_ADMIN ..., no AF_NETLINK or AF_PACKET:
   iptables, routes, raw sockets, namespaces and cgroup moves all fail.
+* the recorder runs as its own user: without CAP_KILL the script cannot signal it,
+  and with ProtectProc=invisible (no CAP_SYS_PTRACE) it cannot see it in /proc.
 * no way to run code outside the sandbox later: the systemd and D-Bus control
   sockets are hidden, cron, systemd units, shell and login startup files,
   ld.so preload, sshd/pam config, /usr and the tracer itself are read-only.
@@ -35,7 +37,7 @@ OUTPUT_LIMIT = 64 * 1024
 FAKE_RANGE = "198.18.0.0/15"
 DROP_CAPS = ("CAP_NET_ADMIN", "CAP_NET_RAW", "CAP_SYS_ADMIN", "CAP_SYS_MODULE", "CAP_SYS_PTRACE", "CAP_BPF",
              "CAP_SYS_BOOT", "CAP_SYS_RAWIO", "CAP_SYS_TIME", "CAP_MKNOD", "CAP_DAC_READ_SEARCH",
-             "CAP_AUDIT_CONTROL", "CAP_PERFMON", "CAP_SYSLOG")
+             "CAP_AUDIT_CONTROL", "CAP_PERFMON", "CAP_SYSLOG", "CAP_KILL")
 # Files that root processes outside the sandbox would execute or trust later.
 READ_ONLY_PATHS = (
     "/opt/rt",
@@ -104,6 +106,8 @@ def sandbox_properties(mem_bytes: int, pids: int, wall: float, allow=(), resolv_
         "NoNewPrivileges=yes",
         "ProtectControlGroups=yes", "ProtectKernelModules=yes", "ProtectKernelTunables=yes",
         "ProtectKernelLogs=yes", "ProtectClock=yes",
+        # Processes of other users (the egress recorder, postgres) are not visible in /proc.
+        "ProtectProc=invisible",
         "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
         "RestrictNamespaces=yes",
         "PrivateDevices=yes",

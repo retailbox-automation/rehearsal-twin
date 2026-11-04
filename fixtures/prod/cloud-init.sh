@@ -246,6 +246,14 @@ PY
 install -m 0644 "$RT_HOME/egress/ca.crt" /usr/local/share/ca-certificates/rt-egress-ca.crt
 update-ca-certificates >/dev/null 2>&1
 
+# The recorder runs as its own system user, not root: the root script in the rehearsal sandbox
+# has no CAP_KILL and no CAP_SYS_PTRACE, so it can neither signal the recorder nor see it in /proc.
+id -u rt-egress >/dev/null 2>&1 \
+  || useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin rt-egress
+chown -R rt-egress:rt-egress "$RT_HOME/egress"
+install -d -m 0750 -o rt-egress -g rt-egress /var/log/rt-egress
+chown -R rt-egress:rt-egress /var/log/rt-egress  # a log left by an earlier root recorder
+
 [ -n "$RT_CONTROL_IP" ] || log "warning: RT_CONTROL_IP is empty; only replies to inbound connections can leave"
 printf 'RT_EGRESS_ALLOW=%s\n' "$RT_CONTROL_IP" > /etc/default/rt-egress
 cat > /etc/systemd/system/rt-egress.service <<'EOF'
@@ -259,8 +267,15 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/default/rt-egress
-ExecStartPre=/opt/rt/bin/rt-egress iptables-up
+# "+": the firewall rules are installed as root; the recorder itself runs as rt-egress.
+ExecStartPre=+/opt/rt/bin/rt-egress iptables-up
 ExecStart=/opt/rt/bin/rt-egress serve
+User=rt-egress
+Group=rt-egress
+# Attribution reads /proc/<pid>/fd of processes of other users (the script, shop-webhooks).
+AmbientCapabilities=CAP_SYS_PTRACE
+CapabilityBoundingSet=CAP_SYS_PTRACE
+NoNewPrivileges=yes
 Restart=always
 RestartSec=1
 
@@ -285,4 +300,6 @@ for _ in $(seq 1 15); do systemctl is-active --quiet rt-egress && break; sleep 1
 for u in postgresql prod-api shop-webhooks auditd rt-egress; do
   log "service $u: $(systemctl is-active "$u" 2>/dev/null || true)"
 done
+rec_pid=$(systemctl show -p MainPID --value rt-egress 2>/dev/null || true)
+log "rt-egress runs as: $(ps -o user= -p "${rec_pid:-0}" 2>/dev/null || echo unknown)"
 log "done"

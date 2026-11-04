@@ -36,11 +36,12 @@ def test_service_mode_command():
                  "OOMPolicy=continue", "IPAddressDeny=any", "IPAddressAllow=localhost",
                  "IPAddressAllow=198.18.0.0/15", "ProtectControlGroups=yes", "ProtectKernelModules=yes",
                  "ProtectKernelTunables=yes", "ProtectClock=yes", "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
-                 "NoNewPrivileges=yes", "PrivateDevices=yes", "ProtectSystem=yes", "ProtectHome=read-only"):
+                 "NoNewPrivileges=yes", "PrivateDevices=yes", "ProtectSystem=yes", "ProtectHome=read-only",
+                 "ProtectProc=invisible"):
         assert want in p, want
     caps = next(x for x in p if x.startswith("CapabilityBoundingSet=~"))
     for cap in ("CAP_NET_ADMIN", "CAP_NET_RAW", "CAP_SYS_ADMIN", "CAP_SYS_MODULE", "CAP_SYS_PTRACE", "CAP_BPF",
-                "CAP_SYS_BOOT", "CAP_SYS_RAWIO", "CAP_SYS_TIME", "CAP_MKNOD", "CAP_DAC_READ_SEARCH"):
+                "CAP_SYS_BOOT", "CAP_SYS_RAWIO", "CAP_SYS_TIME", "CAP_MKNOD", "CAP_DAC_READ_SEARCH", "CAP_KILL"):
         assert cap in caps.split("~", 1)[1].split()
     ro = next(x for x in p if x.startswith("ReadOnlyPaths=")).split("=", 1)[1].split()
     for path in ("-/opt/rt", "-/etc/cron.d", "-/etc/systemd", "-/etc/ld.so.preload", "-/var/log/rt-egress"):

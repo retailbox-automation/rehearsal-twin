@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -95,3 +96,13 @@ def test_compact_fact_trims_the_ledger():
     assert out["files"] == {"created": 2, "modified": 0, "deleted": 0}
     assert len(out["egress"]) == 6
     assert out["sink_events"] == 1
+
+
+def test_stand_addresses_default_and_override():
+    expected_net24 = os.environ.get("RT_L4_NET24", "172.31.77")
+    assert (rr.SUBNET, rr.SINK_IP, rr.CONTROL_IP, rr.GATEWAY) == rr.stand_addresses(expected_net24)
+    assert rr.stand_addresses("172.31.77") == ("172.31.77.0/24", "172.31.77.10", "172.31.77.250", "172.31.77.1")
+    assert rr.stand_addresses("10.213.77") == ("10.213.77.0/24", "10.213.77.10", "10.213.77.250", "10.213.77.1")
+    for bad in ("10.213", "10.213.77.0", "10.213.x", "300.1.1", ""):
+        with pytest.raises(ValueError):
+            rr.stand_addresses(bad)

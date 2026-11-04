@@ -35,7 +35,19 @@ from redteam import checks  # noqa: E402
 PREFIX = "rt-l4-"
 IMAGE = "rt-l4-prod:local"
 PROD, SINK, NET = "rt-l4-prod", "rt-l4-sink", "rt-l4-net"
-SUBNET, SINK_IP, CONTROL_IP, GATEWAY = "172.31.77.0/24", "172.31.77.10", "172.31.77.250", "172.31.77.1"
+
+
+def stand_addresses(net24: str) -> tuple[str, str, str, str]:
+    """(subnet, sink, control, gateway) of the stand's /24 from its first three octets ("172.31.77").
+
+    Overridable with RT_L4_NET24 when another Docker network on the machine already uses the range."""
+    octets = net24.split(".")
+    if len(octets) != 3 or not all(o.isdigit() and 0 <= int(o) <= 255 for o in octets):
+        raise ValueError(f"RT_L4_NET24 must be three octets like 172.31.77, got {net24!r}")
+    return f"{net24}.0/24", f"{net24}.10", f"{net24}.250", f"{net24}.1"
+
+
+SUBNET, SINK_IP, CONTROL_IP, GATEWAY = stand_addresses(os.environ.get("RT_L4_NET24", "172.31.77"))
 WORK = "/opt/rt/work"
 RT = "/opt/rt/bin/rtrace"
 DOCKERFILE = """FROM ubuntu:24.04
@@ -183,7 +195,7 @@ class DockerTarget(Target):
             time.sleep(1)
         self.guard()
         # docker --internal gives the subnet a gateway address but no endpoint gets a default
-        # route to it (true isolation): nothing outside 172.31.77.0/24 even reaches the routing
+        # route to it (true isolation): nothing outside the stand's /24 even reaches the routing
         # layer, so rt-egress's iptables REDIRECT never fires for a public-looking destination.
         # A real twin has exactly one interface too (no public IP) but DOES get a default route
         # from its VPC DHCP even though that gateway cannot forward past the VPC; this route makes

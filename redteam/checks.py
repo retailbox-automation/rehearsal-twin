@@ -12,6 +12,7 @@ Everything here is pure: the runner collects the facts, this module only compare
 from __future__ import annotations
 
 import json
+import re
 
 KIND_BREAKTHROUGH = "breakthrough"
 KIND_DETECTION = "detection"
@@ -35,6 +36,18 @@ def _statements(led):
     return [s.get("statement") or "" for s in (led or {}).get("sql") or []]
 
 
+_SQL_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.S)
+
+
+def _strip_sql_comments(stmt: str) -> str:
+    """Statement text without -- and /* */ comments (a comment is text, not something Postgres ran)."""
+    return _SQL_COMMENT.sub(" ", stmt)
+
+
+def _gt_sig(v):
+    return v if isinstance(v, str) and v and v != "unreadable" else None
+
+
 def run_check(chk: dict, ctx: dict):
     """Return (ok, detail) for one check dict."""
     led = _led(ctx)
@@ -55,6 +68,13 @@ def run_check(chk: dict, ctx: dict):
             if not ok:
                 return False, " & ".join(details)
         return True, " & ".join(details)
+    if t == "gt_unchanged":
+        # ground truth read by the runner outside the sandbox and the tracer, before and after the run
+        g = (ctx.get("gt_files") or {}).get(chk["path"]) or {}
+        b, a = _gt_sig(g.get("before")), _gt_sig(g.get("after"))
+        if b is None or a is None:
+            return False, f"no ground truth for {chk['path']} (before={g.get('before')} after={g.get('after')})"
+        return b == a, f"{chk['path']} {'unchanged' if b == a else 'changed'} on the machine ({b[:12]} -> {a[:12]})"
     if t == "fail_closed":
         if led is None:
             return True, "no ledger was produced: " + str(ctx.get("flow", {}).get("failed_step"))
@@ -97,6 +117,11 @@ def run_check(chk: dict, ctx: dict):
             return True, (f"egress record {e.get('method') or e.get('kind')} {e.get('host')}:{e.get('port')} "
                           f"{e.get('path') or e.get('blocked') or ''}")
         return False, f"no egress record for {chk}; egress count={len(led.get('egress') or [])}"
+    if t == "no_completed_egress":
+        # every egress entry to this port must be a connection blocked before its handshake: a request
+        # that got a body through (and so could have carried data) is not "blocked"
+        done = [e for e in led.get("egress") or [] if e.get("port") == chk["port"] and not e.get("blocked")]
+        return not done, f"{len(done)} egress entries to port {chk['port']} that were not blocked"
     if t == "dns_seen":
         for d in led.get("dns") or []:
             if chk["contains"] in (d.get("qname") or ""):
@@ -121,7 +146,10 @@ def run_check(chk: dict, ctx: dict):
         hit = [s for s in _statements(led) if chk["contains"].lower() in s.lower()]
         return bool(hit), f"{len(hit)} statements contain {chk['contains']!r}; sql[]={len(_statements(led))}"
     if t == "sql_lacks":
-        hit = [s for s in _statements(led) if chk["contains"].lower() in s.lower()]
+        stmts = _statements(led)
+        if chk.get("ignore_comments"):
+            stmts = [_strip_sql_comments(s) for s in stmts]
+        hit = [s for s in stmts if chk["contains"].lower() in s.lower()]
         return not hit, f"{len(hit)} statements contain {chk['contains']!r}"
     if t == "scope_reason":
         hit = [o for o in led.get("out_of_scope") or [] if o.get("kind") == chk["scope_kind"]]

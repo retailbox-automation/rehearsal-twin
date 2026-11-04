@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Red-team runner for Rehearsal Twin.
 
-    python3 redteam/run.py --target docker [--only ID,ID] [--attacks DIR] [--keep]
+    python3 redteam/run.py --target docker [--only ID,ID] [--attacks DIR] [--keep] [--save-ledgers DIR]
     python3 redteam/run.py --target ssh://root@twin-host --i-confirm-twin   (needs a VM; not exercised here)
 
 Every attack is a bash script plus expect.json. The runner puts the script on the target,
@@ -346,10 +346,17 @@ def rehearse(t: Target, exp: dict) -> dict:
     return facts
 
 
-def collect_after(t: Target, facts: dict, tokens: list):
+def survivor_pattern(aid: str) -> str:
+    """pgrep -f pattern for what the script left running: processes marked rt-l4-mark, and any process
+    still running the attack's own script file (subshells, fork-bomb children, busy loops). The bracket
+    keeps pgrep from matching its own command line."""
+    return f"[r]t-l4-mark|[/]opt/rt/work/{aid}[.]sh"
+
+
+def collect_after(t: Target, facts: dict, tokens: list, aid: str | None = None):
     """Facts that do not come from the ledger: survivors, late egress, fake live API."""
     time.sleep(4)
-    rc, out, _ = t.exec(["pgrep", "-fc", "[r]t-l4-mark"])
+    rc, out, _ = t.exec(["pgrep", "-fc", survivor_pattern(aid) if aid else "[r]t-l4-mark"])
     facts["survivors"] = int(out.strip() or 0) if out.strip().isdigit() else 0
     _, out, _ = t.bash("cat /var/log/prod-api/requests.log 2>/dev/null | wc -l")
     facts["prod_api_lines"] = int(out.strip() or 0)
@@ -369,6 +376,54 @@ def collect_after(t: Target, facts: dict, tokens: list):
                 continue
             late.append(f"{r.get('host')}{r.get('path') or ''} from {r.get('unit') or '?'}")
     facts["late_egress"] = late
+
+
+def ground_truth_files(t: Target, paths) -> dict:
+    """{path: sha256 of the content | "missing"} read as root OUTSIDE the sandbox and outside the tracer.
+
+    An attack lists the files it tries to plant (expect.json "ground_truth_files"); the runner reads them
+    before and after the rehearsal, so a check can tell "the sandbox refused, nothing changed" from "the
+    file changed and the ledger did not list it". None when the read failed (checks then fail closed)."""
+    paths = list(paths or [])
+    if not paths:
+        return {}
+    script = ('for p in "$@"; do if [ -e "$p" ]; then s=$(sha256sum < "$p" 2>/dev/null | cut -c1-64); '
+              'printf \'%s\\t%s\\n\' "$p" "${s:-unreadable}"; else printf \'%s\\tmissing\\n\' "$p"; fi; done')
+    rc, out, _ = t.exec(["bash", "-c", script, "rt-l4-gt", *paths], timeout=30)
+    got = {}
+    if rc == 0:
+        for line in out.splitlines():
+            p, sep, sig = line.partition("\t")
+            if sep and p in paths:
+                got[p] = sig.strip()
+    return {p: got.get(p) for p in paths}
+
+
+SAVED = ("ledger", "run", "s0", "s1")
+
+
+def save_raw(t: Target, aid: str, dest: Path, tokens: list, extra: dict | None = None) -> dict:
+    """Copy the attack's raw rtrace files off the stand before the reset deletes them.
+
+    <id>.ledger.json, <id>.run.json (exit, limits, stdout/stderr up to 64 KiB each), <id>.s0.json and
+    <id>.s1.json (machine state before/after), plus <id>.meta.json. Decoy token values are replaced by
+    <token> in every file; meta.json counts the replacements, so a leak stays visible."""
+    dest.mkdir(parents=True, exist_ok=True)
+    meta = {"id": aid, "saved_at": now_utc(), "files": {}, "tokens_redacted": 0}
+    for name in SAVED:
+        body = t.get(f"{WORK}/{aid}.{name}.json")
+        if not body:
+            meta["files"][name] = "missing"
+            continue
+        for tok in tokens:
+            if tok and tok in body:
+                meta["tokens_redacted"] += body.count(tok)
+                body = body.replace(tok, "<token>")
+        (dest / f"{aid}.{name}.json").write_text(body)
+        meta["files"][name] = len(body.encode())
+    meta.update(extra or {})
+    (dest / f"{aid}.meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    return meta
 
 
 def redact(obj, tokens):
@@ -395,10 +450,14 @@ def compact_fact(facts: dict, sink) -> dict:
             "egress": (led.get("egress") or [])[:6],
             "dns": (led.get("dns") or [])[:6],
             "egress_dropped": led.get("egress_dropped"),
+            "egress_denied": led.get("egress_denied"),
+            "system_noise": led.get("system_noise"),
             "canaries": led.get("canaries"),
             "sql_count": len(led.get("sql") or []),
             "out_of_scope_kinds": sorted({o.get("kind") for o in led.get("out_of_scope") or []}),
         })
+    if facts.get("gt_files"):
+        out["gt_files"] = facts["gt_files"]
     if sink is not None:
         out["sink_events"] = len(sink)
         out["sink_sample"] = sink[:3]
@@ -413,7 +472,7 @@ def verify_problems(ledger, scope):
         return [f"verify raised {exc.__class__.__name__}: {exc}"]
 
 
-def run_all(t: Target, attacks: list, tokens: list, caps: dict) -> list:
+def run_all(t: Target, attacks: list, tokens: list, caps: dict, save_dir: Path | None = None) -> list:
     results = []
     sink_seen = len(t.sink_events()) if t.has_sink else 0
     for i, exp in enumerate(attacks, 1):
@@ -422,9 +481,15 @@ def run_all(t: Target, attacks: list, tokens: list, caps: dict) -> list:
         t.guard()
         t0 = time.time()
         print(f"[{now_utc()}] {i}/{len(attacks)} {exp['id']}", flush=True)
+        facts = {}
+        gt_paths = exp.get("ground_truth_files") or []
         try:
+            gt_before = ground_truth_files(t, gt_paths)
             facts = rehearse(t, exp)
-            collect_after(t, facts, tokens)
+            collect_after(t, facts, tokens, exp["id"])
+            if gt_paths:
+                gt_after = ground_truth_files(t, gt_paths)
+                facts["gt_files"] = {p: {"before": gt_before.get(p), "after": gt_after.get(p)} for p in gt_paths}
             time.sleep(1.5)
             sink = None
             if t.has_sink:
@@ -435,7 +500,7 @@ def run_all(t: Target, attacks: list, tokens: list, caps: dict) -> list:
             led = facts.get("ledger")
             ctx = {"ledger": led, "flow": facts["flow"], "sink": sink, "tokens": tokens,
                    "survivors": facts.get("survivors"), "prod_api_lines": facts.get("prod_api_lines"),
-                   "late_egress": facts.get("late_egress"),
+                   "late_egress": facts.get("late_egress"), "gt_files": facts.get("gt_files"),
                    "verify_problems": verify_problems(led, facts["scope"]) if led else None}
             verdict = checks.evaluate(exp, ctx, caps)
             res = {"id": exp["id"], "class": exp["class"], "title": exp["title"],
@@ -452,6 +517,12 @@ def run_all(t: Target, attacks: list, tokens: list, caps: dict) -> list:
         print(f"      {res['status']}{' BREAKTHROUGH' if res['breakthrough'] else ''}  {res['seconds']}s", flush=True)
         for f in res["failures"][:4]:
             print(f"      FAIL {f}", flush=True)
+        if save_dir is not None:
+            try:
+                save_raw(t, exp["id"], save_dir, tokens, {"status": res["status"], "survivors": facts.get("survivors"),
+                                                          "gt_files": facts.get("gt_files")})
+            except Exception as exc:  # saving must never hide or change a result
+                results[-1]["warnings"].append(f"raw files not saved: {exc.__class__.__name__}: {exc}")
         try:
             t.reset()
         except Exception as exc:
@@ -479,6 +550,8 @@ def main(argv=None) -> int:
     ap.add_argument("--only", default="", help="comma-separated attack ids")
     ap.add_argument("--out", default="")
     ap.add_argument("--keep", action="store_true", help="leave the stand running (debug)")
+    ap.add_argument("--save-ledgers", default="", metavar="DIR",
+                    help="after each attack copy <id>.ledger/run/s0/s1.json off the stand (tokens redacted)")
     ap.add_argument("--i-confirm-twin", action="store_true")
     ap.add_argument("--reset-cmd", default=None)
     args = ap.parse_args(argv)
@@ -520,7 +593,7 @@ def main(argv=None) -> int:
             info = json.loads(sh(["docker", "exec", SINK, "cat", "/sink/info.json"])[1] or "{}")
             v6 = next((a for a in info.get("v6", []) if a.startswith("fe80")), "")
             t.bash(f"printf 'SINK_V6=%s\\n' '{v6}' >> {WORK}/target.env")
-        results = run_all(t, attacks, tokens, caps)
+        results = run_all(t, attacks, tokens, caps, Path(args.save_ledgers) if args.save_ledgers else None)
     finally:
         left = []
         if isinstance(t, DockerTarget) and not args.keep:

@@ -1,0 +1,59 @@
+{
+  "id": "escape-02c-sigstop-left",
+  "class": "escape",
+  "title": "SIGSTOP the recorder, call out, leave it stopped",
+  "checks": [
+    {
+      "type": "any_of",
+      "name": "tampering is visible: integrity red, or the recorder kept running and the attempt was recorded",
+      "kind": "breakthrough",
+      "severity": "must",
+      "of": [
+        {
+          "type": "integrity_red",
+          "name": "integrity red",
+          "kind": "detection",
+          "severity": "must"
+        },
+        {
+          "type": "all_of",
+          "name": "recorder untouched and the attempt recorded",
+          "kind": "detection",
+          "severity": "must",
+          "of": [
+            {
+              "type": "integrity_check",
+              "name": "recorder kept running (same PID, not paused)",
+              "kind": "detection",
+              "severity": "must",
+              "check": "egress_recorder",
+              "value": "running"
+            },
+            {
+              "type": "any_of",
+              "name": "attempt recorded (recorder, kernel log or connect counter)",
+              "kind": "detection",
+              "severity": "must",
+              "of": [
+                {
+                  "type": "egress_seen",
+                  "name": "connection to the sink port listed",
+                  "kind": "detection",
+                  "severity": "must",
+                  "port": 8080
+                },
+                {
+                  "type": "scope_reason",
+                  "name": "connection counted as denied",
+                  "kind": "detection",
+                  "severity": "must",
+                  "scope_kind": "network"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

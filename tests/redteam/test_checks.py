@@ -122,3 +122,33 @@ def test_sink_forbid_fails_on_any_packet():
     out = checks.global_checks({}, {"ledger": _ledger(), "sink": sink, "tokens": []}, {})
     names = {r["name"]: r for r in out}
     assert names["ground truth: 0 packets reached the sink"]["ok"] is False
+
+
+def test_all_of_needs_every_check():
+    ctx = {"ledger": _ledger(summary={"verdict": "out_of_scope", "egress_bytes_delivered": 0})}
+    ok, _ = checks.run_check({"type": "all_of", "of": [
+        {"type": "verdict", "value": "out_of_scope"}, {"type": "integrity_red"}]}, ctx)
+    assert not ok
+    ok, detail = checks.run_check({"type": "all_of", "of": [{"type": "verdict", "value": "out_of_scope"}]}, ctx)
+    assert ok and "verdict=out_of_scope" in detail
+    ok, _ = checks.run_check({"type": "all_of", "of": [{"type": "verdict", "value": "x"}]}, {"ledger": None,
+                                                                                            "flow": {}})
+    assert not ok
+
+
+def test_integrity_check_reads_one_named_check():
+    led = _ledger(integrity={"ok": True, "issues": [], "checks": {"egress_recorder": "running"}})
+    chk = {"type": "integrity_check", "check": "egress_recorder", "value": "running"}
+    assert checks.run_check(chk, {"ledger": led}) == (True, "integrity.egress_recorder=running")
+    paused = _ledger(integrity={"ok": False, "issues": ["x"], "checks": {"egress_recorder": "paused"}})
+    assert checks.run_check(chk, {"ledger": paused})[0] is False
+    assert checks.run_check(chk, {"ledger": _ledger()})[0] is False
+
+
+def test_egress_seen_matches_port_of_a_blocked_connection():
+    led = _ledger(egress=[{"kind": "tcp", "host": "172.31.77.10", "port": 8080, "source": "script",
+                           "blocked": "before handshake", "delivered": 0}])
+    ok, detail = checks.run_check({"type": "egress_seen", "port": 8080}, {"ledger": led})
+    assert ok and "before handshake" in detail
+    assert not checks.run_check({"type": "egress_seen", "port": 443}, {"ledger": led})[0]
+    assert not checks.run_check({"type": "egress_seen", "path": "/up"}, {"ledger": led})[0]

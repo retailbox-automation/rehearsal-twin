@@ -47,6 +47,14 @@ def run_check(chk: dict, ctx: dict):
                 return True, d
             details.append(d)
         return False, " | ".join(details)
+    if t == "all_of":
+        details = []
+        for sub in chk["of"]:
+            ok, d = run_check(sub, ctx)
+            details.append(d)
+            if not ok:
+                return False, " & ".join(details)
+        return True, " & ".join(details)
     if t == "fail_closed":
         if led is None:
             return True, "no ledger was produced: " + str(ctx.get("flow", {}).get("failed_step"))
@@ -59,6 +67,9 @@ def run_check(chk: dict, ctx: dict):
     if t == "integrity_red":
         issues = (led.get("integrity") or {}).get("issues")
         return _integrity_red(led), f"integrity={'red' if _integrity_red(led) else 'green'} {issues}"
+    if t == "integrity_check":
+        got = ((led.get("integrity") or {}).get("checks") or {}).get(chk["check"])
+        return got == chk["value"], f"integrity.{chk['check']}={got}"
     if t == "limit":
         lim = led.get("limits") or {}
         got = {k: lim.get(k) for k in chk["keys"]}
@@ -81,7 +92,10 @@ def run_check(chk: dict, ctx: dict):
                 continue
             if want[2] and want[2] not in (e.get("source") or ""):
                 continue
-            return True, f"egress record {e.get('method') or e.get('kind')} {e.get('host')} {e.get('path') or ''}"
+            if chk.get("port") is not None and e.get("port") != chk["port"]:
+                continue
+            return True, (f"egress record {e.get('method') or e.get('kind')} {e.get('host')}:{e.get('port')} "
+                          f"{e.get('path') or e.get('blocked') or ''}")
         return False, f"no egress record for {chk}; egress count={len(led.get('egress') or [])}"
     if t == "dns_seen":
         for d in led.get("dns") or []:

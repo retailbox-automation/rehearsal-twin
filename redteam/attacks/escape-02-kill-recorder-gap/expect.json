@@ -5,7 +5,7 @@
   "checks": [
     {
       "type": "any_of",
-      "name": "gap is visible: integrity red or the attempt recorded",
+      "name": "tampering is visible: integrity red, or the recorder kept running and the attempt was recorded",
       "kind": "breakthrough",
       "severity": "must",
       "of": [
@@ -16,11 +16,42 @@
           "severity": "must"
         },
         {
-          "type": "egress_seen",
-          "name": "attempt recorded",
+          "type": "all_of",
+          "name": "recorder untouched and the attempt recorded",
           "kind": "detection",
           "severity": "must",
-          "path": "/e02-gap"
+          "of": [
+            {
+              "type": "integrity_check",
+              "name": "recorder kept running (same PID, not paused)",
+              "kind": "detection",
+              "severity": "must",
+              "check": "egress_recorder",
+              "value": "running"
+            },
+            {
+              "type": "any_of",
+              "name": "attempt recorded (recorder, kernel log or connect counter)",
+              "kind": "detection",
+              "severity": "must",
+              "of": [
+                {
+                  "type": "egress_seen",
+                  "name": "connection to the sink port listed",
+                  "kind": "detection",
+                  "severity": "must",
+                  "port": 8080
+                },
+                {
+                  "type": "scope_reason",
+                  "name": "connection counted as denied",
+                  "kind": "detection",
+                  "severity": "must",
+                  "scope_kind": "network"
+                }
+              ]
+            }
+          ]
         }
       ]
     }

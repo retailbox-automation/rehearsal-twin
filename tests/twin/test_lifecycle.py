@@ -49,8 +49,10 @@ def test_wait_ready_waits_for_ok_and_ssh(fake, client, ssh, runner):
     assert twin.wait_ready(timeout=60, poll_s=0) is twin
     assert len(fake.calls("GET", f"/v2/instances/{twin.id}")) >= 3
     assert twin.host == "10.77.0.21"
-    assert len(runner.calls) == 2
-    assert runner.calls[-1]["argv"][-1] == "true"
+    cmds = [" ".join(c["argv"]) for c in runner.calls]
+    assert len(cmds) == 4  # ssh true (refused), ssh true, cloud-init status --wait, ssh true again
+    assert "cloud-init status --wait" in cmds[2] and runner.calls[-1]["argv"][-1] == "true"
+    assert twin.cloud_init == "done"
 
 
 def test_wait_ready_rejects_public_ip(fake, client, ssh):
@@ -153,3 +155,65 @@ def test_prod_restore(fake, client, ssh, runner):
     assert runner.calls[-1]["argv"][-1] == "true"
     rc, out, _ = prod.exec(["echo", "ok"])
     assert rc == 0 and out == "ok\n"
+
+
+class _ByCommand:
+    """ssh runner fake that answers by the remote command: {"cloud-init": [(rc, out, err), ...], "true": ...}."""
+
+    def __init__(self, answers):
+        self.answers = {k: list(v) for k, v in answers.items()}
+        self.calls = []
+
+    def __call__(self, argv, input=None, stdin=None, capture_output=False, timeout=None, check=False):
+        import subprocess
+        self.calls.append({"argv": list(argv), "timeout": timeout})
+        key = "cloud-init" if any("cloud-init" in a for a in argv) else "true"
+        queue = self.answers.get(key) or []
+        rc, out, err = queue.pop(0) if len(queue) > 1 else (queue[0] if queue else (0, b"", b""))
+        return subprocess.CompletedProcess(argv, rc, out, err)
+
+
+def _ssh_with(runner, tmp_path):
+    from rt.twin.lifecycle import SSH
+    key = tmp_path / "k2"
+    key.write_text("placeholder")
+    return SSH(key_file=str(key), jump="198.51.100.10", runner=runner, state_dir=str(tmp_path / "kh2"))
+
+
+def test_wait_ready_retries_cloud_init_while_sshd_reloads(fake, client, tmp_path):
+    # 04.11.2026: cloud-init reloads sshd ~2 s after SSH first answers; a command in that moment is refused
+    r = _ByCommand({"true": [(0, b"", b"")],
+                    "cloud-init": [(255, b"", b"ssh: connect to host 10.77.0.21 port 22: Connection refused"),
+                                   (0, b"status: done\n", b"")]})
+    twin = make_twin(client, _ssh_with(r, tmp_path)).wait_ready(timeout=60, poll_s=0)
+    kinds = ["cloud-init" if any("cloud-init" in a for a in c["argv"]) else "true" for c in r.calls]
+    assert kinds == ["true", "cloud-init", "cloud-init", "true"]
+    assert twin.cloud_init == "done"
+
+
+def test_cloud_init_absent_or_finished_with_errors_does_not_block(fake, client, tmp_path):
+    for rc, seen in ((127, "absent"), (2, "done with recoverable errors"), (1, "done with errors")):
+        r = _ByCommand({"true": [(0, b"", b"")], "cloud-init": [(rc, b"", b"")]})
+        twin = make_twin(client, _ssh_with(r, tmp_path)).wait_ready(timeout=60, poll_s=0)
+        assert twin.cloud_init == seen
+
+
+def test_cloud_init_wait_gives_up_after_its_timeout_without_failing(fake, client, tmp_path):
+    r = _ByCommand({"true": [(0, b"", b"")], "cloud-init": [(255, b"", b"Connection refused")]})
+    twin = make_twin(client, _ssh_with(r, tmp_path))
+    twin.host = "10.77.0.21"
+    seen = twin._wait_cloud_init(timeout=0.2, poll_s=0)
+    assert seen.startswith("still running after 0 s") and "Connection refused" in seen
+
+
+def test_prod_restore_waits_for_cloud_init(fake, client, tmp_path):
+    from datetime import datetime, timezone
+    from rt.twin.lifecycle import Prod
+    now = datetime.now(timezone.utc)
+    pid = fake.add_instance(tags=["rt-keep"], created=now, label="prod", main_ip="203.0.113.9")
+    r = _ByCommand({"true": [(0, b"", b"")], "cloud-init": [(0, b"status: done\n", b"")]})
+    prod = Prod.attach(pid, client=client, ssh=_ssh_with(r, tmp_path))
+    fake.ready_after_gets = 1
+    prod.restore("golden-1", timeout=60, poll_s=0, settle_s=0)
+    kinds = ["cloud-init" if any("cloud-init" in a for a in c["argv"]) else "true" for c in r.calls]
+    assert kinds[-2:] == ["cloud-init", "true"] and prod.cloud_init == "done"

@@ -30,6 +30,7 @@ PROTECTED_TAGS = frozenset({"probe", "rt-keep"})
 ALLOWED_PLANS = ("vc2-1c-1gb", "vc2-1c-2gb", "vc2-2c-4gb")
 DEFAULT_PLAN = "vc2-1c-2gb"
 DEFAULT_REGION = "ewr"
+CLOUD_INIT_WAIT_S = 180.0  # first boot from a snapshot: cloud-init reloads sshd after SSH already answers
 RID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,62}$")
 
 
@@ -149,6 +150,7 @@ class _Machine:
         self.vpc_id = vpc_id
         self.host = host
         self.label = label
+        self.cloud_init: str | None = None  # what _wait_cloud_init saw on the last boot
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(id={self.id!r}, host={self.host!r})"
@@ -202,6 +204,37 @@ class _Machine:
                 last = str(e)
             if time.monotonic() > deadline:
                 raise TwinError(f"{self.id} not ready: ssh to {self.host} not answering ({last})")
+            self.client.sleep(poll_s)
+
+    def _wait_cloud_init(self, timeout: float = CLOUD_INIT_WAIT_S, poll_s: float = 5.0) -> str:
+        """Wait for cloud-init to finish before anything is traced.
+
+        A machine booted from the golden snapshot answers SSH while cloud-init is still running, and
+        cloud-init's final stage reloads sshd a few seconds later: a command started in that moment gets
+        "Connection refused" (04.11.2026, rehearsal 8cd98ea5fe66; probe: ready at uptime 29 s, sshd reload
+        at 31 s, cloud-init still running at 108 s). Returns what was seen; never fails the machine on its
+        own, a later SSH failure still does.
+        """
+        deadline = time.monotonic() + timeout
+        last = ""
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                self.cloud_init = f"still running after {timeout:.0f} s ({last})".strip()
+                return self.cloud_init
+            try:
+                rc, out, err = self.ssh.run(self.host, ["cloud-init", "status", "--wait"], name=self.id,
+                                            timeout=max(1.0, left))
+            except SSHTimeout as e:
+                last = str(e)
+                continue
+            if rc in (0, 1, 2):  # finished: 0 done, 1 error, 2 done with recoverable errors
+                self.cloud_init = {0: "done", 1: "done with errors", 2: "done with recoverable errors"}[rc]
+                return self.cloud_init
+            if rc == 127:
+                self.cloud_init = "absent"
+                return self.cloud_init
+            last = f"rc={rc} {(out + err)[:120].decode('utf-8', 'replace').strip()}"  # 255: sshd reloading
             self.client.sleep(poll_s)
 
     def _resolve_host(self, inst: dict) -> str:
@@ -276,6 +309,8 @@ class Twin(_Machine):
             raise TwinError(f"{msg}; destroyed")
         self.host = self._resolve_host(inst)
         self._wait_ssh(deadline, poll_s)
+        self._wait_cloud_init(poll_s=poll_s)
+        self._wait_ssh(max(deadline, time.monotonic() + 60.0), poll_s)
         return self
 
     def destroy(self, timeout: float = 300.0, poll_s: float = 3.0) -> float:
@@ -320,4 +355,6 @@ class Prod(_Machine):
         inst = self._wait_api_ready(deadline, poll_s, settle_s=settle_s)
         self.host = self._resolve_host(inst)
         self._wait_ssh(deadline, poll_s)
+        self._wait_cloud_init(poll_s=poll_s)
+        self._wait_ssh(max(deadline, time.monotonic() + 60.0), poll_s)
         return round(time.monotonic() - t0, 3)

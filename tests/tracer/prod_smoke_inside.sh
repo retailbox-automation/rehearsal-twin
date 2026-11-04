@@ -264,9 +264,17 @@ check("noise: a system process dropping packets leaves the script in scope",
       nz["summary"]["verdict"] == "in_scope" and nz["system_noise"]["udp_packets"] >= 1
       and nz["egress_denied"] == {"packets": 0}, (nz["summary"], nz["system_noise"], nz["out_of_scope"][:3]))
 ua = load("udp_attempt.ledger.json")
+# Where the kernel log has the nat connect line (a twin; not a container network namespace) the flow is
+# also listed as one blocked UDP egress entry to 192.0.2.9:9, which adds one "host" entry. Nothing else.
+ua_kinds = sorted((o["kind"], o["op"]) for o in ua["out_of_scope"])
+ua_listed = ua_kinds == [("host", "udp:9"), ("network", "denied")]
 check("noise: the script's own UDP attempt is a denial, out of scope",
       ua["egress_denied"]["packets"] >= 3 and ua["summary"]["verdict"] == "out_of_scope"
-      and [o["op"] for o in ua["out_of_scope"]] == ["denied"], (ua["egress_denied"], ua["out_of_scope"]))
+      and ua_kinds in ([("network", "denied")], [("host", "udp:9"), ("network", "denied")])
+      and ua["egress"] == ([{"kind": "udp", "host": "192.0.2.9", "port": 9, "bytes_attempted": 0, "delivered": 0,
+                             "source": "script", "blocked": "dropped by the firewall"}] if ua_listed else [])
+      and ua["summary"]["egress_bytes_delivered"] == 0,
+      (ua["egress_denied"], ua["out_of_scope"], ua["egress"]))
 print(f"      noise: system_noise {nz['system_noise']}, drop_log {nz['drop_log'][:2]}; "
       f"script denied {ua['egress_denied']}, drop_log {ua['drop_log'][:2]}, ip_accounting {ua['ip_accounting']}")
 o = load("oom.run.json")["limits"]

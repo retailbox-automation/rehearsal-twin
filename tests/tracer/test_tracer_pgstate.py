@@ -10,12 +10,16 @@ def hx(s: str) -> str:
     return s.encode().hex()
 
 
-def tline(oid, schema, name, pk="", digest="d0", kind="r"):
-    return S.join(["T", str(oid), kind, hx(schema), hx(name), hx(pk), digest])
+def tline(oid, schema, name, pk="", digest="d0", kind="r", cols=("id",), vol="0"):
+    return S.join(["T", str(oid), kind, hx(schema), hx(name), hx(pk), digest, ",".join(hx(c) for c in cols), vol])
 
 
-def rline(oid, key, row):
-    return S.join(["R", str(oid), key, row])
+def rline(oid, key, row, stable=None, sig="a" * 16):
+    return S.join(["R", str(oid), key, row, stable or row, sig])
+
+
+def val(row, stable=None, sig="a" * 16):
+    return f"{row}:{stable or row}:{sig}"
 
 
 def psql_meta_commands(script: str) -> list:
@@ -84,8 +88,9 @@ def test_table_with_backslash_name_is_traced_under_its_own_key():
     assert snap["ok"] is True
     key = 'public."orders \\! touch /tmp/PWNED_postgres"'
     assert sorted(snap["tables"]) == sorted(["orders", key])
-    assert snap["tables"]["orders"] == {"pk": "id", "schema": "s1", "count": 2, "rows": {"k1": "r1", "k2": "r2"}}
-    assert snap["tables"][key]["rows"] == {"k1": "x1"}
+    assert snap["tables"]["orders"] == {"pk": "id", "schema": "s1", "count": 2, "columns": ["id"], "volatile": [],
+                                        "rows": {"k1": val("r1"), "k2": val("r2")}}
+    assert snap["tables"][key]["rows"] == {"k1": val("x1")}
     assert snap["unsafe_names"] == [key]
 
 
@@ -95,7 +100,7 @@ def test_names_with_newline_or_separator_cannot_add_lines_or_fields():
                          rline(16400, "k1", "r1")]) + "\n"
         snap = pgstate.snapshot({"pg": {}}, runner=lambda s, c, out=out: out)
         assert snap["ok"] is True, snap
-        assert snap["tables"]["orders"]["rows"] == {"k1": "r1"}
+        assert snap["tables"]["orders"]["rows"] == {"k1": val("r1")}
         assert snap["unsafe_names"] == [pgstate.table_key("public", name)]
 
 
@@ -111,24 +116,29 @@ def test_table_key_has_no_collisions():
     out = "\n".join([tline(1, "public", "billing.invoices", "id"), tline(2, "billing", "invoices", "id"),
                      rline(1, "a", "1"), rline(2, "b", "2")]) + "\n"
     snap = pgstate.snapshot({"pg": {}}, runner=lambda s, c: out)
-    assert snap["tables"]['public."billing.invoices"']["rows"] == {"a": "1"}
-    assert snap["tables"]["billing.invoices"]["rows"] == {"b": "2"}
+    assert snap["tables"]['public."billing.invoices"']["rows"] == {"a": val("1")}
+    assert snap["tables"]["billing.invoices"]["rows"] == {"b": val("2")}
 
 
 def test_snapshot_parses_rows_and_multisets():
-    out = "\n".join([tline(10, "public", "prices", "id", "aaa"), tline(11, "public", "log", "", "bbb"),
-                     rline(10, "k1", "r1"), rline(10, "k2", "r2"),
+    out = "\n".join([tline(10, "public", "prices", "id", "aaa", cols=("id", "amount", "updated_at"), vol="001"),
+                     tline(11, "public", "log", "", "bbb"),
+                     rline(10, "k1", "r1", "s1", "a" * 48), rline(10, "k2", "r2", "s2", "b" * 48),
                      rline(11, "", "x"), rline(11, "", "x"), rline(11, "", "y")]) + "\n"
     snap = pgstate.snapshot({"pg": {}}, runner=lambda s, c: out)
     assert snap["ok"] is True and "unsafe_names" not in snap
-    assert snap["tables"]["prices"] == {"pk": "id", "schema": "aaa", "count": 2, "rows": {"k1": "r1", "k2": "r2"}}
-    assert snap["tables"]["log"]["multiset"] == {"x": 2, "y": 1}
+    assert snap["tables"]["prices"] == {"pk": "id", "schema": "aaa", "count": 2,
+                                        "columns": ["id", "amount", "updated_at"], "volatile": ["updated_at"],
+                                        "rows": {"k1": val("r1", "s1", "a" * 48), "k2": val("r2", "s2", "b" * 48)}}
+    assert snap["tables"]["log"]["multiset"] == {val("x"): 2, val("y"): 1}
     assert snap["tables"]["log"]["count"] == 3
 
 
 def test_unexpected_output_is_an_error_not_a_guess():
     for out in (rline(99, "k", "r") + "\n", "@@T orders\n", tline("x", "public", "t") + "\n",
-                S.join(["T", "1", "r", "zz", hx("t"), "", "d"]) + "\n"):
+                S.join(["T", "1", "r", "zz", hx("t"), "", "d", hx("id"), "0"]) + "\n",
+                tline(1, "public", "t", cols=("a", "b"), vol="0") + "\n",
+                tline(1, "public", "t") + "\n" + rline(1, "k", "r", sig="a" * 15) + "\n"):
         snap = pgstate.snapshot({"pg": {}}, runner=lambda s, c, out=out: out)
         assert snap["ok"] is False, out
 
@@ -143,6 +153,10 @@ def test_session_pins_search_path_and_output_settings_and_reads_only_the_table_i
     assert "ROW(t.*)::text" in script and "md5(t::text)" not in script
     assert "CASE WHEN tbl.relkind = 'r' THEN 'ONLY' ELSE '' END" in script
     assert script.rstrip().endswith("COMMIT;")
+    # the stable hash leaves out time types and clock/random/sequence defaults; defaults are in the
+    # schema digest, so making a column "volatile" during the run shows as a schema change
+    assert "'timestamptz'::regtype" in script and "gen_random_uuid" in script and "nextval" in script
+    assert "|| coalesce(pg_get_expr(d.adbin, d.adrelid), ''), ',' ORDER BY a.attnum)" in script
 
 
 def test_snapshot_reports_errors_instead_of_raising():
@@ -153,7 +167,31 @@ def test_snapshot_reports_errors_instead_of_raising():
     assert pgstate.snapshot({"pg": {"enabled": False}})["error"] == "disabled"
 
 
+def sha(text) -> str:
+    return hashlib.sha256(str(text).encode()).hexdigest()
+
+
+def sim(rows: dict, cols=("id", "amount"), volatile=(), pk="id", schema="s1") -> dict:
+    """A table entry as the snapshot builds it, with the hashes computed here instead of in Postgres:
+    rows {pk value: {column: value}}."""
+    entry = {"pk": pk, "schema": schema, "count": len(rows), "columns": list(cols), "volatile": list(volatile)}
+    vals = {}
+    for pkv, r in rows.items():
+        full = sha(repr([r.get(c) for c in cols]))
+        stable = sha(repr([r.get(c) for c in cols if c not in volatile]))
+        sig = "".join(sha("n" if r.get(c) is None else "v" + str(r.get(c)))[:16] for c in cols)
+        vals[sha(pkv)] = f"{full}:{stable}:{sig}"
+    if pk:
+        entry["rows"] = vals
+    else:
+        entry["multiset"] = {}
+        for v in vals.values():
+            entry["multiset"][v] = entry["multiset"].get(v, 0) + 1
+    return entry
+
+
 def table(rows, schema="s1", pk="id"):
+    """Old-style entry: one hash per row, no columns."""
     return {"pk": pk, "schema": schema, "count": len(rows), "rows": dict(rows)}
 
 
@@ -166,7 +204,86 @@ def test_diff_tables_inserted_deleted_updated_by_key():
     t1 = {"prices": table({"a": "1", "b": "20", "d": "4"})}
     assert pgstate.diff_tables(t0, t1) == {"prices": {
         "inserted": 1, "deleted": 1, "updated": 1,
-        "digests": {"inserted": dig("d"), "deleted": dig("c"), "updated": dig("b:20")}}}
+        "digests": {"inserted": dig("d:4"), "deleted": dig("c"), "updated": dig("b:[]:20")}}}
+
+
+def test_updated_digest_names_the_changed_columns():
+    before = sim({1: {"id": 1, "amount": "10.00", "note": "a"}}, cols=("id", "amount", "note"))
+    after = sim({1: {"id": 1, "amount": "11.00", "note": "a"}}, cols=("id", "amount", "note"))
+    d = pgstate.diff_tables({"p": before}, {"p": after})["p"]
+    stable = pgstate.split_row(after["rows"][sha(1)])[1]
+    assert d["digests"] == {"updated": dig(f'{sha(1)}:["amount"]:{stable}')}
+
+
+PRICE_COLS = ("id", "sku", "amount", "updated_at")
+
+
+def prices(n=10, **over):
+    rows = {i: {"id": i, "sku": f"SKU-{i}", "amount": f"{10 + i}.00", "updated_at": "2026-10-01 00:00:00+00"}
+            for i in range(1, n + 1)}
+    for i, r in over.items():
+        rows[int(i[1:])].update(r)
+    return sim(rows, cols=PRICE_COLS, volatile=("updated_at",))
+
+
+def test_same_update_at_another_time_gives_the_same_digests():
+    """A correct apply is not 'diverged': twin and production write now() at different moments."""
+    before = prices()
+    twin = prices(r1={"amount": "12.10", "updated_at": "2026-11-04 10:00:00.123+00"},
+                  r2={"amount": "13.20", "updated_at": "2026-11-04 10:00:00.123+00"})
+    prod = prices(r1={"amount": "12.10", "updated_at": "2026-11-05 15:30:07.999+00"},
+                  r2={"amount": "13.20", "updated_at": "2026-11-05 15:30:07.999+00"})
+    assert twin["rows"] != prod["rows"]  # the rows themselves differ (the timestamp)
+    dt = pgstate.diff_tables({"prices": before}, {"prices": twin})["prices"]
+    dp = pgstate.diff_tables({"prices": before}, {"prices": prod})["prices"]
+    assert dt == dp
+    assert dt["updated"] == 2 and set(dt["digests"]) == {"updated"}
+
+    # inserts whose created_at comes from DEFAULT now(): same keys and values, other times
+    cols = ("id", "msg", "created_at")
+    base = sim({1: {"id": 1, "msg": "a", "created_at": "t0"}}, cols=cols, volatile=("created_at",))
+    ins_twin = sim({1: {"id": 1, "msg": "a", "created_at": "t0"}, 2: {"id": 2, "msg": "b", "created_at": "t1"}},
+                   cols=cols, volatile=("created_at",))
+    ins_prod = sim({1: {"id": 1, "msg": "a", "created_at": "t0"}, 2: {"id": 2, "msg": "b", "created_at": "t9"}},
+                   cols=cols, volatile=("created_at",))
+    assert pgstate.diff_tables({"log": base}, {"log": ins_twin}) == pgstate.diff_tables({"log": base}, {"log": ins_prod})
+
+    # the same without a primary key
+    nb = sim({1: {"msg": "a", "at": "t0"}}, cols=("msg", "at"), volatile=("at",), pk="")
+    nt = sim({1: {"msg": "a", "at": "t0"}, 2: {"msg": "b", "at": "t1"}}, cols=("msg", "at"), volatile=("at",), pk="")
+    np_ = sim({1: {"msg": "a", "at": "t0"}, 2: {"msg": "b", "at": "t5"}}, cols=("msg", "at"), volatile=("at",), pk="")
+    assert pgstate.diff_tables({"l": nb}, {"l": nt}) == pgstate.diff_tables({"l": nb}, {"l": np_})
+
+
+def test_other_rows_or_other_values_give_other_digests():
+    before = prices()
+    twin = prices(r1={"amount": "12.10", "updated_at": "T1"}, r2={"amount": "13.20", "updated_at": "T1"})
+    dt = pgstate.diff_tables({"prices": before}, {"prices": twin})["prices"]["digests"]
+    cases = {
+        "other rows": prices(r3={"amount": "14.30", "updated_at": "T2"}, r4={"amount": "15.40", "updated_at": "T2"}),
+        "other amount": prices(r1={"amount": "121.00", "updated_at": "T2"}, r2={"amount": "13.20", "updated_at": "T2"}),
+        "another column too": prices(r1={"amount": "12.10", "sku": "X", "updated_at": "T2"},
+                                     r2={"amount": "13.20", "updated_at": "T2"}),
+        "timestamp left alone": prices(r1={"amount": "12.10"}, r2={"amount": "13.20"}),
+    }
+    for what, prod in cases.items():
+        dp = pgstate.diff_tables({"prices": before}, {"prices": prod})["prices"]
+        assert dp["updated"] == 2, what
+        assert dp["digests"]["updated"] != dt["updated"], what
+    # inserted rows: same key, other non-time value
+    cols = ("id", "msg", "created_at")
+    base = sim({}, cols=cols, volatile=("created_at",))
+    a = sim({7: {"id": 7, "msg": "ok", "created_at": "t1"}}, cols=cols, volatile=("created_at",))
+    b = sim({7: {"id": 7, "msg": "evil", "created_at": "t1"}}, cols=cols, volatile=("created_at",))
+    da = pgstate.diff_tables({"log": base}, {"log": a})["log"]["digests"]
+    db = pgstate.diff_tables({"log": base}, {"log": b})["log"]["digests"]
+    assert da["inserted"] != db["inserted"]
+    # deleted: other keys
+    dela = pgstate.diff_tables({"p": before}, {"p": prices(5)})["p"]["digests"]
+    rows_b = {i: {"id": i, "sku": f"SKU-{i}", "amount": f"{10 + i}.00", "updated_at": "2026-10-01 00:00:00+00"}
+              for i in range(1, 11) if not 2 <= i <= 6}
+    delb = pgstate.diff_tables({"p": before}, {"p": sim(rows_b, cols=PRICE_COLS, volatile=("updated_at",))})["p"]
+    assert delb["deleted"] == 5 and delb["digests"]["deleted"] != dela["deleted"]
 
 
 def test_digests_tell_which_rows_not_only_how_many():
@@ -179,11 +296,15 @@ def test_digests_tell_which_rows_not_only_how_many():
     assert dt["deleted"] == dp["deleted"] == 240
     assert dt["digests"]["deleted"] != dp["digests"]["deleted"]
     assert set(dt["digests"]) == {"deleted"}
-    # same rows, same new values: same digest; different new value: different digest
-    u1 = pgstate.diff_tables({"p": table({"1": "a"})}, {"p": table({"1": "b"})})["p"]["digests"]
-    u2 = pgstate.diff_tables({"p": table({"1": "a"})}, {"p": table({"1": "b"})})["p"]["digests"]
-    u3 = pgstate.diff_tables({"p": table({"1": "a"})}, {"p": table({"1": "c"})})["p"]["digests"]
-    assert u1 == u2 != u3
+
+
+def test_changed_columns_with_added_or_dropped_columns_and_old_states():
+    a = sim({1: {"id": 1, "x": "1"}}, cols=("id", "x"))
+    b = sim({1: {"id": 1, "x": "1", "y": "2"}}, cols=("id", "x", "y"))
+    k = sha(1)
+    assert pgstate.changed_columns(a, a["rows"][k], b, b["rows"][k]) == ["y"]
+    assert pgstate.changed_columns({}, "h1", {}, "h2") == []
+    assert pgstate.split_row("h1") == ("h1", "h1", "")
 
 
 def test_diff_tables_drop_create_schema_and_unchanged():
@@ -193,9 +314,9 @@ def test_diff_tables_drop_create_schema_and_unchanged():
     assert d["orders"] == {"inserted": 0, "deleted": 2, "updated": 0, "dropped": True,
                            "digests": {"deleted": dig("1", "2")}}
     assert d["newt"] == {"inserted": 1, "deleted": 0, "updated": 0, "created": True,
-                         "digests": {"inserted": dig("1")}}
+                         "digests": {"inserted": dig("1:x")}}
     assert d["alt"] == {"inserted": 0, "deleted": 0, "updated": 1, "schema_changed": True,
-                        "digests": {"updated": dig("1:x2")}}
+                        "digests": {"updated": dig("1:[]:x2")}}
     assert "same" not in d
 
 

@@ -148,6 +148,8 @@ h2 { font-size: 25px; font-weight: 700; line-height: 36px; }
 .actions { grid-column: 4; grid-row: 2; padding: 22px 19px 0; background: linear-gradient(180deg, #0b1747, #0a143e); border: 1px solid var(--panel-line); border-radius: 12px; }
 .actions button { display: block; width: 100%; height: 56px; border-radius: 9px; font: 500 18px Inter, -apple-system, sans-serif; cursor: pointer; }
 .approve { background: var(--blue-btn); color: #fff; border: 0; box-shadow: 0 0 18px rgba(7,97,254,.45); }
+.hash.diverged { color: var(--red); font-weight: 600; }
+.approve.diverged { background: var(--red-line); box-shadow: 0 0 18px rgba(224,53,77,.55); }
 .reject { margin-top: 18px; background: #09174b; color: #e6ecfc; border: 2px solid #2a62e8; height: 55px !important; }
 .actions hr { border: 0; border-top: 1px solid var(--hr); margin: 26px 0 0; }
 .receipt { display: flex; align-items: center; color: #2f7bff; font-size: 19px; text-decoration: none; margin: 29px 0 0 5px; }

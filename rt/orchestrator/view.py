@@ -260,9 +260,13 @@ def effect_counts(ledger: dict | None) -> dict:
             "egress_attempts": int(s.get("egress_attempts") or 0)}
 
 
-def compare_view(cmp: dict, twin_ledger: dict, prod_ledger: dict) -> dict:
+def compare_view(cmp: dict, twin_ledger: dict, prod_ledger: dict, apply: dict | None = None) -> dict:
+    apply = apply or {}
     return {"predicted": effect_counts(twin_ledger), "happened": effect_counts(prod_ledger),
             "match": bool(cmp.get("match")), "counts": cmp.get("counts") or {},
+            "compare_basis": cmp.get("compare_basis", "counts"),
+            "prod_verdict": apply.get("prod_verdict"), "outcome": apply.get("outcome"),
+            "divergence": apply.get("divergence") or [],
             "surprises": (cmp.get("surprises") or [])[:50]}
 
 
@@ -329,7 +333,11 @@ def screen_view(record: dict, *, presets: list[str], ledger: dict | None, prod_l
         "approval": record.get("approval") if record.get("status") == "awaiting_approval" else None,
         "prod_counters": effect_counts(prod_ledger) if prod_ledger else {"files_changed": 0, "rows_changed": 0,
                                                                          "egress_attempts": 0},
-        "compare": compare_view(compare, ledger or {}, prod_ledger or {}) if compare and prod_ledger else None,
+        "compare": compare_view(compare, ledger or {}, prod_ledger or {}, record.get("apply"))
+        if compare and prod_ledger else None,
+        # "applied" or "diverged" once production ran; the screen draws "diverged" in red.
+        "outcome": (record.get("apply") or {}).get("outcome"),
+        "divergence": (record.get("apply") or {}).get("divergence") or [],
         "receipt_url": f"/api/rehearsals/{record['id']}/receipt" if record.get("receipt") else None,
         "view_key": f"{record['id']}:{(shown or {}).get('n') or 0}",
         "timeline": timeline(events or []),

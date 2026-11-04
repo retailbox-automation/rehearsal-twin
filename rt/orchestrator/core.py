@@ -12,6 +12,8 @@
             any field off, golden snapshot changed or production changed -> Conflict (HTTP 409)
     apply(): same tracer on production; before the script runs its state must still have the
             approved version -> ledger re-checked here -> compare(twin, prod) -> signed receipt
+            -> "applied" only when production matched the rehearsal and its own verdict (computed
+            here) is in scope; otherwise "diverged": the receipt is still signed, and says so
 
     restore_prod(): Prod.restore(golden snapshot); the timer asks only when nothing is open; after it,
             every rehearsal awaiting approval whose twin started from exactly the restored state
@@ -46,7 +48,8 @@ from rt.orchestrator.view import effect_counts, ledger_view, screen_view
 from rt.twin.lifecycle import PROTECTED_TAGS, TWIN_TAG, Prod, Twin, has_public_ip
 
 RUNNING = ("queued", "planning", "rehearsing", "reviewing", "applying")
-TERMINAL = ("failed", "no_safe_variant", "blocked_goal", "applied", "apply_failed", "apply_aborted", "interrupted")
+TERMINAL = ("failed", "no_safe_variant", "blocked_goal", "applied", "diverged", "apply_failed", "apply_aborted",
+            "interrupted")
 APPROVAL_FIELDS = ("ledger_sha256", "script_sha256", "snapshot_id", "prod_state_version")
 MAX_SCRIPT_CHARS = 20000
 MAX_GOAL_CHARS = 4000
@@ -83,6 +86,19 @@ def _thread(fn: Callable[[], object]) -> None:
         except Exception as e:  # each task records its own failure; this is the last resort
             print(f"rt.orchestrator: background task failed: {_err(e)}", flush=True)
     threading.Thread(target=safe, daemon=True).start()
+
+
+def divergence_reasons(verify_problems: list, prod_summary: dict, cmp: dict) -> list[str]:
+    """Why an apply is not a success. Empty: production did what the twin predicted, in scope."""
+    out = []
+    if verify_problems:
+        out.append("the production ledger failed verification on control: " + "; ".join(verify_problems))
+    if prod_summary.get("verdict") != "in_scope":
+        out.append(f"production verdict {prod_summary.get('verdict')}: "
+                   f"{prod_summary.get('out_of_scope_total')} out of scope")
+    if not cmp.get("match"):
+        out.append(f"production differs from the rehearsal: {len(cmp.get('surprises') or [])} surprises")
+    return out
 
 
 class Orchestrator:
@@ -566,14 +582,23 @@ class Orchestrator:
             twin_ledger = self.store.read_json(rid, f"ledger-{n}.json")
             cmp = ledger_compare(twin_ledger, prod_ledger)
             self.store.write_json(rid, "compare.json", cmp)
+            # Production's verdict comes from this machine, never from the ledger's own summary.
+            prod_summary = finalize(prod_ledger, rec["scope"])["summary"]
+            divergence = divergence_reasons(problems, prod_summary, cmp)
             rec["apply"] = {"status": "done", "prod_ledger_sha256": prod_ledger.get("ledger_sha256"),
                             "verify": {"ok": not problems, "problems": problems},
                             "prod_before_state_version": result["state_version"],
-                            "match": cmp["match"], "counts": cmp["counts"]}
+                            "match": cmp["match"], "counts": cmp["counts"],
+                            "compare_basis": cmp.get("compare_basis", "counts"),
+                            "prod_verdict": prod_summary["verdict"],
+                            "prod_out_of_scope_total": prod_summary["out_of_scope_total"],
+                            "outcome": "diverged" if divergence else "applied", "divergence": divergence}
             self._save(rec)
             self._emit_view(rec)  # the screen has the comparison before the compare step lands
             self._emit(rid, "prod_counters", effect_counts(prod_ledger))
-            self._emit(rid, "compare", {"match": cmp["match"], "counts": cmp["counts"]})
+            self._emit(rid, "compare", {"match": cmp["match"], "counts": cmp["counts"],
+                                        "prod_verdict": prod_summary["verdict"],
+                                        "outcome": rec["apply"]["outcome"]})
             self._emit(rid, "step", {"step": "compare"})
             self._collect_llm(rec, llm_mark)
             receipt = self._receipt(rec, twin_ledger, prod_ledger, cmp, script)
@@ -581,7 +606,12 @@ class Orchestrator:
             sig = receipt.get("signature") or {}
             self._save(rec, receipt={"key_id": sig.get("key_id"), "signed": bool(sig),
                                      "sha256": sha256_hex(self.store.read_file(rid, "receipt.json"))},
-                       status="applied")
+                       status=rec["apply"]["outcome"],
+                       error=("production diverged from the rehearsal: " + "; ".join(divergence))
+                       if divergence else None)
+            if divergence:
+                self._emit(rid, "diverged", {"reasons": divergence, "prod_verdict": prod_summary["verdict"],
+                                             "match": cmp["match"]})
             self._emit(rid, "receipt", {"key_id": sig.get("key_id"), "signed": bool(sig)})
         except Exception as e:
             rec = self._reload(rec)
@@ -626,11 +656,19 @@ class Orchestrator:
             "prod_ledger_sha256": ledger_sha256(prod_ledger),
             "prod_ledger_verified_on_control": bool(rec["apply"]["verify"]["ok"]),
             "prod_before_state_version": rec["apply"]["prod_before_state_version"],
+            # The outcome a reader must not miss: "applied" only when production did exactly what
+            # was rehearsed and stayed in scope by this machine's own check.
+            "outcome": rec["apply"]["outcome"],
+            "divergence": rec["apply"]["divergence"],
+            "prod_verdict": {"verdict": rec["apply"]["prod_verdict"],
+                             "out_of_scope_total": rec["apply"]["prod_out_of_scope_total"],
+                             "computed_on": "control"},
             "result": {"exit": prod_ledger.get("exit"), "effects": effect_counts(prod_ledger),
                        "limits": {k: limits.get(k) for k in ("oom", "wall_exceeded", "pids_limit_hit",
                                                              "wall_max_s", "mem_max_mb", "pids_max")
                                   if k in limits}},
             "compare": {"match": cmp["match"], "counts": cmp["counts"], "surprises": len(cmp["surprises"]),
+                        "compare_basis": cmp.get("compare_basis", "counts"),
                         "compare_sha256": sha256_hex(canonical(cmp))},
             "models": [{k: c.get(k) for k in ("purpose", "model_requested", "model_returned", "tokens_in",
                                               "tokens_out", "outcome")} for c in rec.get("llm_calls") or []],
@@ -812,9 +850,11 @@ class Orchestrator:
         records = [self.store.load(r) for r in self.store.ids()]
         applied = [r for r in records if (r.get("apply") or {}).get("status") == "done"]
         matched = [r for r in applied if r["apply"].get("match")]
+        diverged = [r for r in records if r.get("status") == "diverged"]
         twins = sum(1 for i in self.instances() if i["dot"] == "blue")
         q = self.queue_state()
         return {"twins_alive": twins, "runs": len(records), "applied": len(applied), "matched": len(matched),
+                "diverged": len(diverged),
                 "match_rate": round(len(matched) / len(applied), 4) if applied else None,
                 "queue": {"running": len(q["running"]), "waiting": len(q["waiting"]), "cap": q["cap"]},
                 "statuses": {s: sum(1 for r in records if r.get("status") == s)

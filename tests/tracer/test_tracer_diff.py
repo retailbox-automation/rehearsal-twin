@@ -236,6 +236,37 @@ def test_integrity_checks_for_sandbox_escape_attempts():
     assert "refusing to run: cgroup IP filter not available" in refused["issues"]
 
 
+def test_integrity_recorder_paused_restarted_running():
+    s0, s1 = cleanup_states()
+    run = run_record(sandbox={"mode": "service", "ip_filter": "active"}, stats_recorded=True)
+
+    def recorder(e0, e1):
+        a, b = dict(s0, egress_service=e0), dict(s1, egress_service=e1)
+        return diff.build_facts(a, b, run, cleanup_sources(), CFG)["integrity"]
+
+    same = {"active": "active", "main_pid": "10", "restarts": "0", "state": "S"}
+    ok = recorder(same, same)
+    assert ok["ok"] is True and ok["checks"]["egress_recorder"] == "running"
+
+    for letter in ("T", "t"):
+        paused = recorder(same, dict(same, state=letter))
+        assert paused["ok"] is False and paused["checks"]["egress_recorder"] == "paused"
+        assert "egress recorder was paused (stopped by a signal)" in paused["issues"]
+
+    restarted = recorder(same, {"active": "active", "main_pid": "11", "restarts": "1", "state": "S"})
+    assert restarted["checks"]["egress_recorder"] == "restarted"
+    assert "egress recorder restarted during the run" in restarted["issues"]
+    # killed and left stopped after the restart: still reported as the restart
+    both = recorder(same, {"active": "active", "main_pid": "11", "restarts": "1", "state": "T"})
+    assert both["checks"]["egress_recorder"] == "restarted" and not both["ok"]
+    # same PID but NRestarts moved: the restart check is untouched by the state check
+    assert recorder(same, dict(same, restarts="1"))["checks"]["egress_recorder"] == "restarted"
+    # state files written before the state field existed
+    old = {"active": "active", "main_pid": "10", "restarts": "0"}
+    assert recorder(old, old)["checks"]["egress_recorder"] == "running"
+    assert recorder(same, dict(same, state=None))["checks"]["egress_recorder"] == "running"
+
+
 def test_integrity_issues_and_dropped_packets():
     s0, s1 = cleanup_states()
     s1["self_digest"] = "self2"

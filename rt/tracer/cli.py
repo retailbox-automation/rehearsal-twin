@@ -116,9 +116,26 @@ def decoy_watches(defs, rearm: bool, run=_auditctl) -> str:
     return "rearmed"
 
 
-def egress_service() -> dict:
+def process_state(pid, proc_root: str = "/proc") -> str | None:
+    """Scheduler state of a process (R, S, D, T stopped, t traced, Z ...): field 3 of /proc/<pid>/stat."""
+    pid = str(pid or "")
+    if not pid.isdigit() or int(pid) <= 0:
+        return None
+    try:
+        with open(f"{proc_root}/{pid}/stat", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    # comm (field 2) is in parentheses and may itself contain spaces or ')'
+    _, sep, rest = text.rpartition(")")
+    fields = rest.split()
+    return fields[0] if sep and fields else None
+
+
+def egress_service(proc_root: str = "/proc") -> dict:
     info = runner.show("rt-egress.service", "ActiveState", "MainPID", "NRestarts")
-    return {"active": info.get("ActiveState"), "main_pid": info.get("MainPID"), "restarts": info.get("NRestarts")}
+    return {"active": info.get("ActiveState"), "main_pid": info.get("MainPID"), "restarts": info.get("NRestarts"),
+            "state": process_state(info.get("MainPID"), proc_root)}
 
 
 def tracked_roots(cfg: dict, scope_raw) -> list:

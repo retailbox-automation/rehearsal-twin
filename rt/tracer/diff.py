@@ -145,6 +145,10 @@ def integrity(state0: dict, state1: dict, run: dict, sql=(), egress_bad_lines: i
     elif e0 and e1 and (e0.get("main_pid") != e1.get("main_pid") or e0.get("restarts") != e1.get("restarts")):
         checks["egress_recorder"] = "restarted"
         issues.append("egress recorder restarted during the run")
+    elif (e1.get("state") or "") in ("T", "t"):
+        # systemd still reports a SIGSTOPped process as active: only its process state shows it
+        checks["egress_recorder"] = "paused"
+        issues.append("egress recorder was paused (stopped by a signal)")
     else:
         checks["egress_recorder"] = "running"
 

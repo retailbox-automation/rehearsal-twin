@@ -377,3 +377,94 @@ def test_connect_attempts_skips_unusable_lines():
            {"proto": "tcp", "dst": "1.2.3.4", "dpt": "80"}, {"dst": "1.2.3.4", "dpt": 80}]
     assert diff.connect_attempts(bad, []) == []
     assert diff.connect_attempts(None, []) == []
+
+
+def test_file_hashes_and_path_meta_for_created_and_modified():
+    """Finding 4 (tracer side): what each changed path holds, so compare can check content and mode."""
+    big0 = {"t": "f", "size": 9000, "mode": 0o644, "uid": 0, "gid": 0, "mtime_ns": 1, "sha256": None,
+            "ctime_ns": 5, "ino": 7}
+    files0 = {"/srv": d(), "/srv/a": f("aa"), "/srv/big": big0, "/srv/old": f("oo"),
+              "/srv/cur": {"t": "l", "mode": 0o777, "uid": 0, "gid": 0, "mtime_ns": 1, "target": "r1"},
+              "/srv/dir": d()}
+    files1 = {"/srv": d(), "/srv/a": f("ab"), "/srv/big": dict(big0, ctime_ns=6), "/srv/new": f("nn"),
+              "/srv/cur": {"t": "l", "mode": 0o777, "uid": 0, "gid": 0, "mtime_ns": 2, "target": "r2"},
+              "/srv/dir": dict(d(), mode=0o777), "/srv/newdir": d()}
+    src = {"sql": [], "audit": [], "egress_records": [], "egress_bad_lines": 0, "canary_defs": [],
+           "large_hashes": {}}
+    facts = diff.build_facts(state(files0, {}), state(files1, {}), run_record(), src, CFG)
+    assert facts["files"] == {"created": ["/srv/new"], "modified": ["/srv/a", "/srv/big", "/srv/cur"],
+                              "deleted": ["/srv/old"]}
+    assert facts["dirs"] == {"created": ["/srv/newdir"], "modified": ["/srv/dir"], "deleted": []}
+    import hashlib
+    assert facts["file_hashes"] == {"/srv/new": "nn", "/srv/a": "ab", "/srv/big": "size:9000:ctime:6:ino:7",
+                                    "/srv/cur": "link:" + hashlib.sha256(b"r2").hexdigest()}
+    assert facts["path_meta"] == {"/srv/new": "mode:0644:uid:0:gid:0", "/srv/a": "mode:0644:uid:0:gid:0",
+                                  "/srv/big": "mode:0644:uid:0:gid:0", "/srv/cur": "mode:0777:uid:0:gid:0",
+                                  "/srv/newdir": "mode:0755:uid:0:gid:0", "/srv/dir": "mode:0777:uid:0:gid:0"}
+    src["large_hashes"] = {"/srv/big": "cc"}
+    facts = diff.build_facts(state(files0, {}), state(files1, {}), run_record(), src, CFG)
+    assert facts["file_hashes"]["/srv/big"] == "cc"
+    ledger = finalize(facts, {"paths": ["/srv"]})
+    assert ledger["ledger_sha256"] == ledger_sha256(ledger)
+    # the hash covers the new fields
+    other = finalize(dict(facts, file_hashes=dict(facts["file_hashes"], **{"/srv/a": "zz"})), {"paths": ["/srv"]})
+    assert other["ledger_sha256"] != ledger["ledger_sha256"]
+
+
+def test_recorder_egress_keeps_the_port():
+    s0, s1 = cleanup_states()
+    src = cleanup_sources()
+    src["egress_records"].append({"kind": "tcp", "host": "prod-api.internal", "orig_dst": "198.18.0.1", "port": 25,
+                                  "bytes_attempted": 12, "delivered": 0, "unit": "rt-run-ab12.scope",
+                                  "canary_hits": []})
+    eg = diff.build_facts(s0, s1, run_record(), src, CFG)["egress"]
+    assert sorted((e["host"], e["port"]) for e in eg) == [("prod-api.internal", 25), ("prod-api.internal", 443)]
+
+
+def test_integrity_flags_table_names_that_carry_backslashes_or_control_characters():
+    s0, s1 = cleanup_states()
+    key = 'public."orders \\! touch /tmp/x"'
+    s1["pg"]["unsafe_names"] = [key]
+    out = diff.build_facts(s0, s1, run_record(), cleanup_sources(), CFG)["integrity"]
+    assert out["ok"] is False and out["checks"]["table_names"] == "unsafe"
+    assert out["issues"] == ['table names with a backslash or control character: "public.\\"orders \\\\! touch /tmp/x\\""']
+    many = dict(s1, pg=dict(s1["pg"], unsafe_names=[f"t{i}\\" for i in range(7)]))
+    issue = diff.build_facts(s0, many, run_record(), cleanup_sources(), CFG)["integrity"]["issues"][0]
+    assert issue.endswith("(+2 more)")
+
+
+def test_integrity_postgres_unreadable_before_the_run_is_an_issue():
+    """Without the tracer role on the machine every snapshot fails: that must not pass as 'no row changes'."""
+    s0, s1 = cleanup_states()
+    s0["pg"] = {"ok": False, "error": "psql exit 1: runuser: user rtrace does not exist", "tables": {}}
+    s1["pg"] = dict(s0["pg"])
+    out = diff.build_facts(s0, s1, run_record(), cleanup_sources(), CFG)["integrity"]
+    assert "postgres state unreadable before the run: row changes are not traced" in out["issues"]
+    off = {"ok": False, "error": "disabled", "tables": {}}
+    out = diff.build_facts(dict(s0, pg=off), dict(s1, pg=off), run_record(), cleanup_sources(), CFG)["integrity"]
+    assert out["ok"] is True
+
+
+def test_integrity_auditd_stopped_restarted_paused():
+    """Finding 12: auditd runs as root, the root script can signal it; decoy reads would go missing."""
+    s0, s1 = cleanup_states()
+    run = run_record(sandbox={"mode": "service", "ip_filter": "active"}, stats_recorded=True)
+
+    def audit(a0, a1):
+        return diff.build_facts(dict(s0, audit_service=a0), dict(s1, audit_service=a1), run, cleanup_sources(),
+                                CFG)["integrity"]
+
+    same = {"active": "active", "main_pid": "300", "restarts": "0", "state": "S"}
+    ok = audit(same, same)
+    assert ok["ok"] is True and ok["checks"]["auditd"] == "running"
+    stopped = audit(same, {"active": "inactive", "main_pid": "0", "restarts": "0", "state": None})
+    assert stopped["checks"]["auditd"] == "stopped" and not stopped["ok"]
+    restarted = audit(same, dict(same, main_pid="301", restarts="1"))
+    assert restarted["checks"]["auditd"] == "restarted" and not restarted["ok"]
+    assert audit(same, dict(same, main_pid="301"))["checks"]["auditd"] == "restarted"
+    for letter in ("T", "t"):
+        paused = audit(same, dict(same, state=letter))
+        assert paused["checks"]["auditd"] == "paused" and "auditd was paused (stopped by a signal)" in paused["issues"]
+    # no auditd on the machine (a container without kernel audit): reported, not an issue
+    absent = audit({"active": "inactive"}, {"active": "inactive"})
+    assert absent["checks"]["auditd"] == "not running" and absent["ok"] is True

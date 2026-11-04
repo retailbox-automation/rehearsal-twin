@@ -132,10 +132,18 @@ def process_state(pid, proc_root: str = "/proc") -> str | None:
     return fields[0] if sep and fields else None
 
 
-def egress_service(proc_root: str = "/proc") -> dict:
-    info = runner.show("rt-egress.service", "ActiveState", "MainPID", "NRestarts")
+def service_state(unit: str, proc_root: str = "/proc") -> dict:
+    info = runner.show(unit, "ActiveState", "MainPID", "NRestarts")
     return {"active": info.get("ActiveState"), "main_pid": info.get("MainPID"), "restarts": info.get("NRestarts"),
             "state": process_state(info.get("MainPID"), proc_root)}
+
+
+def egress_service(proc_root: str = "/proc") -> dict:
+    return service_state("rt-egress.service", proc_root)
+
+
+def audit_service(proc_root: str = "/proc") -> dict:
+    return service_state("auditd.service", proc_root)
 
 
 def tracked_roots(cfg: dict, scope_raw) -> list:
@@ -173,6 +181,7 @@ def capture(cfg: dict, scope_raw=None, settle_max: float = 0.0, rearm: bool = Fa
         "iptables": iptables_state(),
         "egress_active": egress_active(),
         "egress_service": egress_service(),
+        "audit_service": audit_service(),
         "routes_sha256": routes_digest(),
         "self_digest": self_digest(cfg),
         "decoy_watch": watch,

@@ -95,6 +95,24 @@ def test_changed_companion_file_between_approval_and_apply_never_reaches_product
     assert "run" not in hb.prod.phases and hb.sent == {}
 
 
+def test_apply_sends_the_bytes_it_checked_not_a_second_read(hb, monkeypatch):
+    # A file swapped right after apply() checked it must not be what production receives.
+    rec = run_b(hb)
+    hb.orch.approve(rec["id"], dict(rec["approval"]))
+    store, real, reads = hb.orch.store, hb.orch.store.read_file, []
+
+    def read_file(rid, name):
+        if name == "file-schema_tables.txt":
+            reads.append(name)
+            if len(reads) > 1:
+                return b"customers\n"
+        return real(rid, name)
+    monkeypatch.setattr(store, "read_file", read_file)
+    done = hb.orch.apply(rec["id"])
+    assert done["status"] == "applied", done.get("error")
+    assert sent_file(hb, "schema_tables.txt") == B_FILE
+
+
 def test_changed_companion_file_never_reaches_a_twin(hb):
     rec = hb.orch.create(preset="b")
     hb.orch.store.write_file(rec["id"], "file-schema_tables.txt", b"customers\n")

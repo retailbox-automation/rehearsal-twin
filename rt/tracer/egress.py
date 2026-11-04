@@ -24,6 +24,7 @@ its systemd unit when they can be found in /proc.
 from __future__ import annotations
 
 import argparse
+import base64
 import ipaddress
 import json
 import os
@@ -47,7 +48,6 @@ FAKE_SIZE = 1 << 17
 FAKE_RANGE = "198.18.0.0/15"  # FAKE_BASE .. FAKE_BASE + FAKE_SIZE
 SO_ORIGINAL_DST = 80
 HEAD_MAX = 64 * 1024
-CAPTURE_MAX = 64 * 1024
 BODY_MAX = 16 * 1024 * 1024
 DEFAULT_LOG = "/var/log/rt-egress/egress.jsonl"
 DEFAULT_CA_DIR = "/opt/rt/egress"
@@ -210,20 +210,84 @@ def parse_http_head(head: bytes) -> tuple[str, str, dict]:
     return method, target, headers
 
 
+def base64_forms(token: bytes) -> list:
+    """Substrings that any base64 encoding of a stream containing the token must contain: one per
+    alignment of the token in the 3-byte groups, standard and URL-safe alphabet."""
+    out = []
+    n = len(token)
+    for k in range(3):
+        enc = base64.b64encode(b"\0" * k + token)
+        part = enc[(8 * k + 5) // 6:(8 * (k + n)) // 6]
+        out.append(part)
+        out.append(part.translate(bytes.maketrans(b"+/", b"-_")))
+    return sorted(set(out))
+
+
+_WS = re.compile(rb"[ \t\r\n]+")
+
+
+class TokenScanner:
+    """Finds decoy tokens anywhere in a stream that arrives in chunks.
+
+    A token counts when it appears raw or percent-encoded in any letter case, as hex, or in base64
+    (any alignment, standard or URL-safe, also with line breaks inside). Each view of the stream
+    keeps the last bytes of the previous chunk, so a token split between two reads is found.
+    """
+
+    def __init__(self, tokens: dict):
+        self.text = []    # (id, pattern) matched on the lower-cased raw and percent-decoded stream
+        self.b64 = []     # (id, pattern) matched case-sensitively, whitespace removed
+        for cid, tok in (tokens or {}).items():
+            t = tok.encode()
+            if not t:
+                continue
+            self.text += [(cid, t.lower()), (cid, t.hex().encode())]
+            self.b64 += [(cid, f) for f in base64_forms(t)]
+        lengths = [len(p) for _, p in self.text + self.b64]
+        self.keep = 3 * max(lengths) if lengths else 0  # a percent-encoded token is up to 3x longer
+        self.tails = {"raw": b"", "dec": b"", "b64": b""}
+        self.pending = b""  # an escape cut in half at the end of the last chunk ("%" or "%4")
+        self.hits: set = set()
+
+    def _view(self, name: str, data: bytes) -> bytes:
+        joined = self.tails[name] + data
+        self.tails[name] = joined[-self.keep:] if self.keep else b""
+        return joined
+
+    def feed(self, chunk: bytes) -> None:
+        if not chunk or not self.keep:
+            return
+        data = self.pending + chunk
+        cut = data.rfind(b"%", max(0, len(data) - 2))
+        if cut >= 0:
+            self.pending, data = data[cut:], data[:cut]
+        else:
+            self.pending = b""
+        try:
+            decoded = unquote_to_bytes(data)
+        except Exception:  # noqa: BLE001 - malformed escapes: the raw view still sees the bytes
+            decoded = data
+        raw = self._view("raw", chunk).lower()
+        dec = self._view("dec", decoded).lower()
+        b64 = self._view("b64", _WS.sub(b"", chunk))
+        for cid, pat in self.text:
+            if cid not in self.hits and (pat in raw or pat in dec):
+                self.hits.add(cid)
+        for cid, pat in self.b64:
+            if cid not in self.hits and pat in b64:
+                self.hits.add(cid)
+
+    def found(self) -> list:
+        return sorted(self.hits)
+
+
 def scan_tokens(data: bytes, tokens: dict) -> list:
-    """Ids of canary tokens present in the data (raw or percent-decoded)."""
+    """Ids of canary tokens present in the data (see TokenScanner for the forms)."""
     if not data or not tokens:
         return []
-    try:
-        decoded = unquote_to_bytes(data)
-    except Exception:  # noqa: BLE001 - malformed escapes: scan raw only
-        decoded = b""
-    hits = []
-    for cid, tok in tokens.items():
-        t = tok.encode()
-        if t in data or t in decoded:
-            hits.append(cid)
-    return sorted(hits)
+    sc = TokenScanner(tokens)
+    sc.feed(data)
+    return sc.found()
 
 
 # ---------------------------------------------------------------- process attribution
@@ -423,10 +487,16 @@ class Recorder:
         return build_dns_response(q, ip)
 
     # ---- TCP
-    def _recv(self, s, n=65536) -> bytes:
+    def _recv(self, s, n=65536, st: dict | None = None) -> bytes:
+        """Next bytes, or b"" at the end. A timeout also ends the read but is noted in st["cut"]:
+        the client may still have been sending."""
         try:
             return s.recv(n)
-        except (socket.timeout, TimeoutError, ssl.SSLError, OSError):
+        except (socket.timeout, TimeoutError):
+            if st is not None:
+                st["cut"] = True
+            return b""
+        except (ssl.SSLError, OSError):
             return b""
 
     def _peek_hello(self, conn) -> bytes:
@@ -445,17 +515,24 @@ class Recorder:
             time.sleep(0.01)
         return data
 
-    def _read_request(self, s, first: bytes, rec: dict, tls: bool) -> bytes:
+    def _read_request(self, s, first: bytes, rec: dict, tls: bool, scan: TokenScanner, st: dict) -> None:
+        """Read what the client sends (up to BODY_MAX), feeding every byte to the token scanner.
+
+        st["cut"] is set when the recorder stopped reading while the client might still have
+        been sending (a pause longer than read_timeout, or BODY_MAX reached).
+        """
         buf = first
+        total = len(buf)
+        scan.feed(first)
         while b"\r\n\r\n" not in buf and len(buf) < HEAD_MAX:
             if len(buf) >= 8 and not looks_like_http(buf):
                 break
-            chunk = self._recv(s)
+            chunk = self._recv(s, st=st)
             if not chunk:
                 break
             buf += chunk
-        total = len(buf)
-        captured = buf[:CAPTURE_MAX]
+            total += len(chunk)
+            scan.feed(chunk)
         if looks_like_http(buf) and b"\r\n\r\n" in buf:
             head, _, body = buf.partition(b"\r\n\r\n")
             try:
@@ -466,47 +543,68 @@ class Recorder:
                 rec.update(kind="https" if tls else "http", method=method, path=target,
                            http_host=headers.get("host"))
                 cl = headers.get("content-length", "")
-                if headers.get("expect", "").lower() == "100-continue":
-                    pass
-                elif cl.isdigit():
-                    need = min(int(cl), BODY_MAX) - len(body)
+                if cl.isdigit():
+                    want = int(cl)
+                    if headers.get("expect", "").lower() == "100-continue" and want > len(body):
+                        try:  # let the client send the body: it is recorded, never delivered
+                            s.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+                        except OSError:
+                            pass
+                    need = min(want, BODY_MAX) - len(body)
                     while need > 0:
-                        chunk = self._recv(s, min(65536, need))
+                        chunk = self._recv(s, min(65536, need), st)
                         if not chunk:
                             break
                         need -= len(chunk)
                         total += len(chunk)
-                        if len(captured) < CAPTURE_MAX:
-                            captured += chunk[:CAPTURE_MAX - len(captured)]
+                        scan.feed(chunk)
+                    if want > BODY_MAX:
+                        st["cut"] = True
                 elif "chunked" in headers.get("transfer-encoding", "").lower():
                     tail = body[-5:]
                     while not tail.endswith(b"0\r\n\r\n") and total < BODY_MAX:
-                        chunk = self._recv(s)
+                        chunk = self._recv(s, st=st)
                         if not chunk:
                             break
                         total += len(chunk)
                         tail = (tail + chunk)[-5:]
-                        if len(captured) < CAPTURE_MAX:
-                            captured += chunk[:CAPTURE_MAX - len(captured)]
+                        scan.feed(chunk)
+                    if not tail.endswith(b"0\r\n\r\n") and total >= BODY_MAX:
+                        st["cut"] = True
                 try:
                     s.sendall(RESPONSE_503)
                     rec["response"] = 503
                 except OSError:
                     pass
+                # Whatever else the client sends on this connection (a second request) is scanned
+                # too; a client that goes quiet after the answer is done, not cut.
+                try:
+                    s.settimeout(min(0.2, self.read_timeout))
+                except OSError:
+                    pass
+                while total < BODY_MAX:
+                    chunk = self._recv(s)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    scan.feed(chunk)
+                if total >= BODY_MAX:
+                    st["cut"] = True
         else:
             while total < BODY_MAX:
-                chunk = self._recv(s)
+                chunk = self._recv(s, st=st)
                 if not chunk:
                     break
                 total += len(chunk)
-                if len(captured) < CAPTURE_MAX:
-                    captured += chunk[:CAPTURE_MAX - len(captured)]
+                scan.feed(chunk)
+            if total >= BODY_MAX:
+                st["cut"] = True
         rec["bytes_attempted"] = total
-        return captured
 
     def handle_tcp(self, conn: socket.socket, peer: tuple):
         rec = {"ts": time.time(), "kind": "tcp", "bytes_attempted": 0, "delivered": 0}
-        captured = b""
+        scan = TokenScanner(self.tokens)
+        st: dict = {}
         try:
             conn.settimeout(self.read_timeout)
             try:
@@ -527,20 +625,23 @@ class Recorder:
                 except (ssl.SSLError, OSError, ValueError, RuntimeError) as exc:
                     rec["error"] = f"tls handshake failed: {exc.__class__.__name__}"
                     rec["bytes_attempted"] = len(hello)
-                    captured = hello
+                    scan.feed(hello)
                     return
                 tconn.settimeout(self.read_timeout)
-                first = self._recv(tconn)
-                captured = self._read_request(tconn, first, rec, tls=True)
+                first = self._recv(tconn, st=st)
+                self._read_request(tconn, first, rec, True, scan, st)
                 try:
                     tconn.close()
                 except OSError:
                     pass
             else:
-                first = self._recv(conn)
-                captured = self._read_request(conn, first, rec, tls=False)
+                first = self._recv(conn, st=st)
+                self._read_request(conn, first, rec, False, scan, st)
         finally:
-            rec["canary_hits"] = scan_tokens(captured, self.tokens)
+            rec["canary_hits"] = scan.found()
+            # "partial": bytes the client may have sent after the recorder stopped reading were
+            # not scanned, so a token there would not be seen.
+            rec["token_scan"] = "partial" if st.get("cut") else "full"
             try:
                 conn.close()
             except OSError:

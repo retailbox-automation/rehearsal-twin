@@ -1,3 +1,4 @@
+import base64
 import json
 import shutil
 import socket
@@ -360,5 +361,113 @@ def test_untrusted_client_is_recorded_as_failed_tls(tmp_path):
         r = _records(tmp_path, 1)[0]
         assert r["kind"] == "tls" and r["sni"] == "prod-api.internal"
         assert r["bytes_attempted"] > 0 and r["delivered"] == 0
+    finally:
+        stop.set()
+
+
+# ---- finding 14: the whole stream is scanned, in more than one encoding
+
+TOK = {"purge-url": "rt-canary-url-0123456789abcdef01234567"}
+
+
+def test_scan_tokens_finds_base64_hex_and_case_variants():
+    import base64
+    t = TOK["purge-url"].encode()
+    for k in range(3):
+        blob = b"x" * k + t + b"tail"
+        assert egress.scan_tokens(base64.b64encode(blob), TOK) == ["purge-url"], k
+        assert egress.scan_tokens(base64.urlsafe_b64encode(b"?" * k + t), TOK) == ["purge-url"], k
+    wrapped = base64.encodebytes(b"prefix-" + t * 2)  # MIME style, line breaks every 76 chars
+    assert egress.scan_tokens(wrapped, TOK) == ["purge-url"]
+    assert egress.scan_tokens(t.hex().upper().encode(), TOK) == ["purge-url"]
+    assert egress.scan_tokens(t.upper(), TOK) == ["purge-url"]
+    assert egress.scan_tokens(b"rt-canary-url-0123456789abcdef0123456X", TOK) == []
+    assert egress.scan_tokens(base64.b64encode(b"rt-canary-url-0123456789abcdef0123456X"), TOK) == []
+
+
+def test_token_split_between_chunks_and_escapes_is_found():
+    t = TOK["purge-url"].encode()
+    enc = b"".join(b"%%%02X" % c for c in t)
+    for data in (b"A" * 70000 + t + b"B" * 10, b"q=" + enc):
+        for size in (1, 7, 4096, 65536):
+            sc = egress.TokenScanner(TOK)
+            for i in range(0, len(data), size):
+                sc.feed(data[i:i + size])
+            assert sc.found() == ["purge-url"], (len(data), size)
+    sc = egress.TokenScanner(TOK)
+    for i in range(0, 200000, 4096):
+        sc.feed(b"Z" * 4096)
+    assert sc.found() == []
+
+
+def _send_and_read(port, payload, pause=0.0, tail=b""):
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as c:
+        c.sendall(payload)
+        if pause:
+            time.sleep(pause)
+            try:
+                c.sendall(tail)
+            except OSError:
+                pass
+        c.shutdown(socket.SHUT_WR)
+        resp = b""
+        while True:
+            try:
+                chunk = c.recv(4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            resp += chunk
+    return resp
+
+
+def test_recorder_scans_past_the_first_64_kib(tmp_path):
+    """Finding 14: a token after the first 64 KiB of the body was never looked for."""
+    rec, stop, socks = _recorder(tmp_path, tokens=TOK)
+    try:
+        port = socks["tcp"].getsockname()[1]
+        body = b"x" * 70000 + TOK["purge-url"].encode()
+        resp = _send_and_read(port, b"POST /up HTTP/1.1\r\nHost: prod-api.internal\r\nContent-Length: "
+                              + str(len(body)).encode() + b"\r\n\r\n" + body)
+        assert resp.startswith(b"HTTP/1.1 503 ")
+        r = _records(tmp_path, 1)[0]
+        assert r["canary_hits"] == ["purge-url"] and r["token_scan"] == "full"
+        assert r["bytes_attempted"] > 70000
+    finally:
+        stop.set()
+
+
+def test_recorder_reads_the_body_behind_expect_100_continue(tmp_path):
+    rec, stop, socks = _recorder(tmp_path, tokens=TOK)
+    try:
+        port = socks["tcp"].getsockname()[1]
+        body = base64.b64encode(b"k=" + TOK["purge-url"].encode())
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as c:
+            c.sendall(b"POST /up HTTP/1.1\r\nHost: prod-api.internal\r\nExpect: 100-continue\r\nContent-Length: "
+                      + str(len(body)).encode() + b"\r\n\r\n")
+            assert c.recv(64).startswith(b"HTTP/1.1 100 Continue")
+            c.sendall(body)
+            c.shutdown(socket.SHUT_WR)
+            resp = b""
+            while True:
+                chunk = c.recv(4096)
+                if not chunk:
+                    break
+                resp += chunk
+        assert b"503" in resp
+        r = _records(tmp_path, 1)[0]
+        assert r["canary_hits"] == ["purge-url"] and r["token_scan"] == "full"
+    finally:
+        stop.set()
+
+
+def test_recorder_marks_a_scan_cut_by_a_pause_as_partial(tmp_path):
+    rec, stop, socks = _recorder(tmp_path, tokens=TOK)  # read_timeout 1.0
+    try:
+        port = socks["tcp"].getsockname()[1]
+        _send_and_read(port, b"\x00raw-protocol-hello", pause=1.6, tail=TOK["purge-url"].encode())
+        r = _records(tmp_path, 1)[0]
+        assert r["token_scan"] == "partial" and r["canary_hits"] == []
     finally:
         stop.set()

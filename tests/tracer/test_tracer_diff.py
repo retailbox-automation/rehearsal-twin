@@ -468,3 +468,13 @@ def test_integrity_auditd_stopped_restarted_paused():
     # no auditd on the machine (a container without kernel audit): reported, not an issue
     absent = audit({"active": "inactive"}, {"active": "inactive"})
     assert absent["checks"]["auditd"] == "not running" and absent["ok"] is True
+
+
+def test_partial_token_scan_reaches_the_ledger():
+    s0, s1 = cleanup_states()
+    src = cleanup_sources()
+    src["egress_records"][1]["token_scan"] = "partial"
+    eg = diff.build_facts(s0, s1, run_record(), src, CFG)["egress"]
+    assert eg[0]["token_scan"] == "partial"
+    src["egress_records"][1]["token_scan"] = "full"
+    assert "token_scan" not in diff.build_facts(s0, s1, run_record(), src, CFG)["egress"][0]

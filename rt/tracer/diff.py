@@ -67,6 +67,10 @@ def egress_from_records(records, run_unit: str | None, ignore_units=(), defs=())
                 e["query"] = True
         if r.get("error"):
             e["error"] = r["error"]
+        if r.get("token_scan") == "partial":
+            # the recorder stopped reading before the client was done: a decoy token sent after
+            # that point was not looked for
+            e["token_scan"] = "partial"
         egress.append(e)
     egress.sort(key=lambda e: json.dumps(e, sort_keys=True))
     return egress, [{"qname": q, "count": n} for q, n in sorted(dns.items())], hits

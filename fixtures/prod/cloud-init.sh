@@ -303,5 +303,7 @@ for u in postgresql prod-api shop-webhooks auditd rt-egress; do
   log "service $u: $(systemctl is-active "$u" 2>/dev/null || true)"
 done
 rec_pid=$(systemctl show -p MainPID --value rt-egress 2>/dev/null || true)
-log "rt-egress runs as: $(ps -o user= -p "${rec_pid:-0}" 2>/dev/null || echo unknown)"
+# (ps would cut the 9-letter user name to "rt-egre+")
+log "rt-egress runs as: $(id -nu "$(awk '/^Uid:/{print $3}' "/proc/${rec_pid:-0}/status" 2>/dev/null)" 2>/dev/null \
+  || echo unknown)"
 log "done"

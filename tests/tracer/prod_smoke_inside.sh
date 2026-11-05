@@ -59,9 +59,33 @@ psql shop -c "DELETE FROM sessions WHERE expires_at < now()"
 curl -s -X POST https://prod-api.internal/purge -d '{"scope":"all"}'
 EOF
 
+# reseed() only restores dropped tables (CREATE IF NOT EXISTS, ON CONFLICT DO NOTHING), not changed
+# prices. Every safe run must start from the fixture amounts, as a twin and production both start
+# from the golden snapshot, so the amounts are saved once and put back between the price runs.
+# The price_changed trigger is off while they go back: no webhook from the restore can land in the
+# next rehearsal's window. The temp table lives only in this psql session.
+PRICES0="$W/prices0.tsv"
+PGUSER=shop psql -X -q -v ON_ERROR_STOP=1 -d shop -c "\copy (SELECT id, amount FROM prices) TO '$PRICES0'"
+restore_prices() {
+  PGUSER=shop psql -X -q -v ON_ERROR_STOP=1 -d shop <<SQL
+BEGIN;
+CREATE TEMP TABLE p0 ON COMMIT DROP AS SELECT id, amount FROM prices WITH NO DATA;
+\copy p0 FROM '$PRICES0'
+ALTER TABLE prices DISABLE TRIGGER prices_changed;
+UPDATE prices SET amount = p0.amount FROM p0 WHERE prices.id = p0.id AND prices.amount IS DISTINCT FROM p0.amount;
+ALTER TABLE prices ENABLE TRIGGER prices_changed;
+COMMIT;
+SQL
+}
+
 rehearse reprice "$W/reprice_winter.sh" '{"tables": {"prices": {"max_rows": 31}}, "hosts": []}' || echo "rehearse reprice failed"
+restore_prices || echo "restore prices failed"
 rehearse safe1 "$W/reprice_safe.sh" '{"tables": {"prices": {"max_rows": 31}}, "hosts": ["hooks.partner.example"]}' || echo "rehearse safe1 failed"
+restore_prices || echo "restore prices failed"
 rehearse safe2 "$W/reprice_safe.sh" '{"tables": {"prices": {"max_rows": 31}}, "hosts": ["hooks.partner.example"]}' || echo "rehearse safe2 failed"
+# Control: the same script again WITHOUT the restore starts from already repriced rows, so its row
+# digests must differ from safe2 (proves the compare looks at values, not only at counts).
+rehearse safe3 "$W/reprice_safe.sh" '{"tables": {"prices": {"max_rows": 31}}, "hosts": ["hooks.partner.example"]}' || echo "rehearse safe3 failed"
 rehearse migrate_safe "$W/migrate_safe.sh" '{"tables": ["legacy_orders"]}' || echo "rehearse migrate_safe failed"
 reseed
 rehearse migrate "$W/migrate_0042.sh" '{"tables": ["legacy_orders"]}' || echo "rehearse migrate failed"
@@ -165,7 +189,7 @@ def check(name, ok, detail=""):
 canaries = json.load(open("/opt/rt/canaries.json"))["canaries"]
 tokens = [c["token"] for c in canaries]
 
-for name in ("reprice", "safe1", "safe2", "migrate_safe", "migrate", "exfil", "escape", "noise", "udp_attempt",
+for name in ("reprice", "safe1", "safe2", "safe3", "migrate_safe", "migrate", "exfil", "escape", "noise", "udp_attempt",
              "cleanup_safe", "cleanup"):
     led = load(f"{name}.ledger.json")
     blob = json.dumps(led)
@@ -192,6 +216,9 @@ check("safe: in scope", s1["summary"]["verdict"] == "in_scope", s1["out_of_scope
 cmp = compare(s1, s2)
 check("compare: two safe runs match", cmp["match"], cmp["surprises"][:3])
 print(f"      compare counts {cmp['counts']}")
+s3 = load("safe3.ledger.json")
+cmp3 = compare(s2, s3)
+check("compare control: a run on already repriced rows does not match", not cmp3["match"], cmp3["surprises"][:1])
 
 ms = load("migrate_safe.ledger.json")
 check("migrate_safe: only legacy_orders dropped, in scope",

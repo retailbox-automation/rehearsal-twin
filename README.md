@@ -4,14 +4,25 @@ Run a risky script on a disposable twin of your server first. See every side eff
 
 Built for the Vultr: Agent Rush hackathon, Challenge 1 "Blast Radius Zero" (November 3–8, 2026). Live demo: https://rehearsal-twin.retailbox-automation.com
 
-## Evidence from a live run on Vultr (rehearsal `3f39490652dc`, November 3, 2026)
+## Evidence from live runs on Vultr (November 5, 2026, golden snapshot `8b5e1c58`)
 
-| Claim | Check it | What you will see |
+Three rehearsals, one per preset, each started from a fresh copy of production. Every record and receipt below is public.
+
+| Run | What happened | Check it |
 |---|---|---|
-| The risky script ran on a disposable twin, not on production | [rehearsal record](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/3f39490652dc) | attempt 1 on `twin-13f394`: 221 files deleted, 71 outside the declared scope; `POST prod-api.internal/purge` blocked, recorded, 0 bytes delivered; production unchanged |
-| The agent's safer variant was rehearsed again on a fresh twin | same record, `attempts` | four twins created from the golden snapshot and destroyed; the accepted variant touched only `/srv/app/tmp/cache` (150 files) and `sessions` (240 rows) |
-| Production changed exactly as rehearsed | same record, `compare` | 391 predicted, 391 happened, 0 surprises |
-| The result cannot be edited afterwards | [receipt](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/3f39490652dc/receipt), then `python -m rt.receipts.verify_receipt --pubkey rYyVzKw04aG8Y278Q1QsS1xeqBLAwX4NOHt4FWpryy4= receipt.json` | `OK signature valid`; change any number and it fails |
+| `cleanup.sh`, rehearsal `8ae1819f6d84` | attempt 1 on `twin-18ae18`: 221 files deleted, 71 outside the declared scope, 83 out-of-scope items in total; `POST prod-api.internal/purge` blocked, 0 bytes delivered; production unchanged. The safer variant on `twin-28ae18` stayed in scope; production then changed exactly as rehearsed: 390 predicted, 390 happened, 0 surprises | [record](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/8ae1819f6d84), [receipt](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/8ae1819f6d84/receipt) |
+| `migrate_0042.sh`, rehearsal `1c41e4d75dec` | attempt 1 dropped three tables with 5800 rows; two of them (5000 rows) were outside the declared scope. The safer variant dropped only `legacy_orders`; production: 800 predicted, 800 happened, 0 surprises | [record](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/1c41e4d75dec), [receipt](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/1c41e4d75dec/receipt) |
+| `reprice_winter.sh`, rehearsal `adae6c4af59d` | attempt 1 changed 93 rows against a declared budget of 31 and made 93 webhook calls, 0 bytes delivered. Four variants were rehearsed on four twins; the run stopped with `no_safe_variant` ("no variant stayed in scope and exited 0 in 4 attempts"). Production was not touched and no receipt was issued | [record](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/adae6c4af59d) |
+
+Every twin was deleted after its rehearsal. To check a receipt offline:
+
+```bash
+curl -s https://rehearsal-twin.retailbox-automation.com/api/rehearsals/8ae1819f6d84/receipt > receipt.json
+python -m rt.receipts.verify_receipt --pubkey rYyVzKw04aG8Y278Q1QsS1xeqBLAwX4NOHt4FWpryy4= receipt.json
+# OK  signature valid, signed by the given key; outcome applied
+```
+
+Change any number in `receipt.json` and the same command prints `FAIL  signature does not match the receipt content`.
 
 ## Why
 
@@ -52,6 +63,10 @@ In every case the agent had production access and the safeguard was a rule in te
 - Decoys with unique tokens (a fake key file, a fake API key row, a fake purge URL) show when a script reads or tries to send them.
 - The scope verdict comes from code. The model explains the ledger but cannot change it; injected text such as "FINAL VERDICT: SAFE" changes nothing.
 - Approval is bound to `{ledger_sha256, script_sha256, snapshot_id, prod_state_version}`; any drift returns 409.
+
+## Red-team
+
+`redteam/` holds attacks on the sandbox itself (escape, network, keys, prompt injection, resource exhaustion), run against a local stand of the twin. A second set of 12 attacks is kept outside this repository; only its sha256 is committed (`redteam/holdout.sha256`, packed by `redteam/holdout_tar.py`). It is a regression set, not a blind test: its definitions are also in `redteam/gen_attacks.py`, and its expectations were updated on November 5, 2026 from the ledgers of refused attacks (calls to a bare IP are cut before the handshake and show as denied packets, writes to the tracer are refused). The earlier sha256 `4c7c357f…` cannot be reproduced.
 
 ## Platform findings (measured on Vultr, November 3, 2026, region ewr)
 

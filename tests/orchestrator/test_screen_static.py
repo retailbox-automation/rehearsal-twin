@@ -45,3 +45,21 @@ def test_layout_guards():
 
 def test_uptime_zero_is_not_shown_as_zero_days():
     assert 'if (!(s > 0)) return "\\u2014";' in APP
+
+
+def test_ended_runs_disable_the_buttons_and_say_why():
+    m = re.search(r"const ENDED_TEXT = (\{[^}]*\});", APP, re.S)
+    assert m, "ENDED_TEXT missing"
+    keys = set(re.findall(r"(\w+):", m.group(1)))
+    assert keys == set(core.TERMINAL) - {"applied", "diverged"}
+    # "nothing applied" is claimed only where no approval can exist
+    claims = set(re.findall(r'(\w+): "[^"]*nothing applied"', m.group(1)))
+    assert claims == {"no_safe_variant", "blocked_goal"}
+    assert "state.done = true" in APP and 'const ended = state.done ? ENDED_TEXT[state.finalStatus] || "" : "";' in APP
+    assert 'id="receipt-label"' in HTML and "Boolean(state.done && !state.r.receipt_url)" in APP
+
+
+def test_a_server_error_event_does_not_end_the_stream():
+    # an SSE event named "error" (a failed step) is a MessageEvent with data; closing on it lost "done"
+    assert "src.onerror = (e) => { if (e.data === undefined) src.close(); };" in APP
+    assert "src.onerror = () => src.close();" not in APP

@@ -9,6 +9,10 @@
 
   const state = { r: null, step: null, rows: 0, summary: false, prod: { files: 0, rows: 0 }, gone: new Set(), added: new Set(), compare: false, presetList: [], explain: null, replay: false };
   const TERMINAL = ["failed", "no_safe_variant", "blocked_goal", "applied", "diverged", "apply_failed", "apply_aborted", "interrupted"];
+  // A run that ended without an approved change: once its record has played to the end, the buttons say so.
+  // "nothing applied" only where no approval can exist (no safe variant, goal blocked by the input filter).
+  const ENDED_TEXT = { no_safe_variant: "No safe variant \u2014 nothing applied", blocked_goal: "Goal blocked \u2014 nothing applied",
+    failed: "Run failed", apply_failed: "Apply failed", apply_aborted: "Apply aborted \u2014 script not run", interrupted: "Interrupted" };
   const t0 = Date.now();
 
   // The screen is laid out for 1672 x 941 px; scale it to the window (1280-1920 and beyond) so the whole
@@ -162,11 +166,15 @@
 
   function renderActions() {
     if (state.r.receipt_url) $("receipt").href = state.r.receipt_url;
+    const noReceipt = Boolean(state.done && !state.r.receipt_url);  // the run ended without a signed receipt
+    $("receipt").classList.toggle("none", noReceipt);
+    $("receipt-label").textContent = noReceipt ? "No receipt" : "Receipt";
     const past = STEPS.indexOf(state.step) >= 2;
-    $("approve").disabled = past;
-    $("reject").disabled = past;
+    const ended = state.done ? ENDED_TEXT[state.finalStatus] || "" : "";
+    $("approve").disabled = past || Boolean(ended);
+    $("reject").disabled = past || Boolean(ended);
     $("approve").textContent = state.r.status === "diverged" ? "Applied — PROD DIVERGED"
-      : past ? "Approved — applied to PROD" : "Approve safer variant";
+      : past ? "Approved — applied to PROD" : ended || "Approve safer variant";
     $("approve").classList.toggle("diverged", state.r.status === "diverged");
   }
 
@@ -211,8 +219,14 @@
       state.r = Object.assign(v, { timeline: state.r ? state.r.timeline : [] });
       renderStatic(); render();
     });
-    src.addEventListener("done", () => { src.close(); state.replay = true; showReplay(); });
-    src.onerror = () => src.close();
+    src.addEventListener("done", (m) => {
+      src.close(); state.replay = true; state.done = true;
+      try { state.finalStatus = JSON.parse(m.data).status || state.finalStatus; } catch (e) { /* keep the status from the record */ }
+      showReplay(); renderActions();
+    });
+    // The server also sends an event named "error" (a failed step): that arrives here as a MessageEvent with
+    // data and must not end the stream before "done"; only a lost connection (no data) closes it.
+    src.onerror = (e) => { if (e.data === undefined) src.close(); };
   }
 
   $("approve").addEventListener("click", async () => {
@@ -286,6 +300,7 @@
     } catch (e) { /* the selector falls back to the names in the record */ }
     if (state.r.empty) state.r = emptyRecord(state.r);
     state.replay = !state.r.empty && (Boolean(freezeAt) || TERMINAL.includes(state.r.status));
+    state.finalStatus = TERMINAL.includes(state.r.status) ? state.r.status : null;
     $("run").disabled = !live();
     if (live()) { pollQueue(); setInterval(pollQueue, 3000); }
     renderStatic();

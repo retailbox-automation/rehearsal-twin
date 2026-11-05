@@ -7,14 +7,18 @@
   const $ = (id) => document.getElementById(id);
   const STEPS = ["rehearse", "review", "apply", "compare"];
 
-  const state = { r: null, step: null, rows: 0, summary: false, prod: { files: 0, rows: 0 }, gone: new Set(), added: new Set(), compare: false, presetList: [] };
+  const state = { r: null, step: null, rows: 0, summary: false, prod: { files: 0, rows: 0 }, gone: new Set(), added: new Set(), compare: false, presetList: [], explain: null, replay: false };
+  const TERMINAL = ["failed", "no_safe_variant", "blocked_goal", "applied", "diverged", "apply_failed", "apply_aborted", "interrupted"];
   const t0 = Date.now();
 
-  // The screen is laid out for 1672 px; scale it to the window (1280-1920 and beyond), wrap below 1200.
-  const DESIGN_W = 1672, NARROW = 1200;
+  // The screen is laid out for 1672 x 941 px; scale it to the window (1280-1920 and beyond) so the whole
+  // console fits without scrolling when the window is close to 16:9, wrap below 1200.
+  const DESIGN_W = 1672, DESIGN_H = 941, NARROW = 1200;
   function fit() {
-    const w = document.documentElement.clientWidth;
-    document.body.style.zoom = w <= NARROW ? "" : String(Math.min(w / DESIGN_W, 2));
+    const w = document.documentElement.clientWidth, h = document.documentElement.clientHeight;
+    const zw = w / DESIGN_W, zh = h / DESIGN_H;
+    const z = zh >= zw * 0.8 ? Math.min(zw, zh) : zw;  // much shorter windows scroll instead of shrinking
+    document.body.style.zoom = w <= NARROW ? "" : String(Math.min(z, 2));
   }
   fit();
   window.addEventListener("resize", fit);
@@ -26,9 +30,16 @@
     return n;
   };
   const short = (h) => `${h.slice(0, 4)}...${h.slice(-4)}`;
-  const fmtUptime = (s) => {
-    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600);
-    return `${d}d ${String(h).padStart(2, "0")}h`;
+  const fmtUptime = (s) => {  // 0 means "not known yet"; PROD is reset hourly, so minutes matter
+    if (!(s > 0)) return "\u2014";
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+    return d > 0 ? `${d}d ${String(h).padStart(2, "0")}h` : `${h}h ${String(m).padStart(2, "0")}m`;
+  };
+  // An operator can put the API token in this tab's sessionStorage by hand; it is sent as a header only.
+  const withToken = (headers) => {
+    const t = sessionStorage.getItem("rt-operator-token");
+    if (t) headers["X-RT-Token"] = t;
+    return headers;
   };
 
   function renderStatic() {
@@ -88,16 +99,19 @@
     const e = s.egress_line;
     const b = $("blocked-text");
     b.replaceChildren(document.createTextNode(`${e.method} ${e.target} — `), el("em", "", e.note));
+    b.title = `${e.method} ${e.target} — ${e.note}`;
   }
 
   function renderLedger() {
     const body = document.querySelector("#ledger tbody");
     const rows = state.r.ledger_view.slice(0, state.rows);
+    $("ledger").classList.toggle("dense", state.r.ledger_view.length > 4);  // up to 7 rows fit the card
     while (body.children.length < rows.length) {
       const v = rows[body.children.length];
       const tr = el("tr", state.animate ? "enter" : "");
       const pill = el("span", v.verdict === "in_scope" ? "pill in" : "pill out", v.verdict === "in_scope" ? "in scope" : "out of scope");
       const t = el("td", "t", v.target), vv = el("td", "v"), rr = el("td", "r", v.reason), d = el("td", "d", v.delta);
+      t.title = v.target; rr.title = v.reason || ""; d.title = v.delta;
       vv.append(pill);
       tr.append(t, vv, rr, d);
       body.append(tr);
@@ -114,6 +128,7 @@
     }
     if (diverged) line = `DIVERGED: PROD did not do what was rehearsed.   ${line.trim()}`;
     $("hash").textContent = line;
+    $("hash").title = line.trim();
     $("hash").classList.toggle("diverged", diverged);
   }
 
@@ -133,6 +148,18 @@
     $("rows-changed").textContent = state.prod.rows;
   }
 
+  function renderExplain() {  // the agent's own words from the explain event, nothing added
+    const x = state.explain;
+    $("explain").hidden = !x;
+    if (!x) return;
+    $("explain-title").textContent = `Agent \u00b7 attempt ${x.n}`;
+    $("explain-summary").textContent = x.summary || "";
+    $("explain-why").textContent = x.why_safer || "";
+    $("explain-why-row").hidden = !x.why_safer;
+    const body = document.querySelector("#explain .ex-body");  // fade the bottom when the text scrolls on
+    body.classList.toggle("more", body.scrollHeight > body.clientHeight + 2);
+  }
+
   function renderActions() {
     if (state.r.receipt_url) $("receipt").href = state.r.receipt_url;
     const past = STEPS.indexOf(state.step) >= 2;
@@ -144,7 +171,7 @@
   }
 
   function render() {
-    renderSteps(); renderTwin(); renderLedger(); renderInstances(); renderProd(); renderActions();
+    renderSteps(); renderTwin(); renderLedger(); renderInstances(); renderProd(); renderActions(); renderExplain();
   }
 
   function reduce(type, data) {
@@ -155,6 +182,7 @@
       case "ledger_row": state.rows = Math.max(state.rows, data.index + 1); break;
       case "twin_summary": state.summary = true; break;
       case "prod_counters": state.prod = { files: data.files_changed, rows: data.rows_changed }; break;
+      case "explain": state.explain = data; break;
     }
   }
 
@@ -169,7 +197,7 @@
   function playLive() {
     state.animate = true;
     const src = new EventSource(`/api/rehearsals/${encodeURIComponent(state.r.id || rid)}/events${pace !== null ? `?pace=${encodeURIComponent(pace)}` : ""}`);
-    const types = ["step", "instance_add", "instance_remove", "ledger_row", "twin_summary", "prod_counters"];
+    const types = ["step", "instance_add", "instance_remove", "ledger_row", "twin_summary", "prod_counters", "explain"];
     for (const t of types) {
       src.addEventListener(t, (m) => { reduce(t, JSON.parse(m.data)); render(); });
     }
@@ -183,7 +211,7 @@
       state.r = Object.assign(v, { timeline: state.r ? state.r.timeline : [] });
       renderStatic(); render();
     });
-    src.addEventListener("done", () => src.close());
+    src.addEventListener("done", () => { src.close(); state.replay = true; showReplay(); });
     src.onerror = () => src.close();
   }
 
@@ -195,7 +223,7 @@
     const headers = { "Content-Type": "application/json" };
     if (owner) headers["X-RT-Owner"] = owner;
     const res = await fetch(`/api/rehearsals/${encodeURIComponent(state.r.id)}/approve`, {
-      method: "POST", headers, body: JSON.stringify(a) });
+      method: "POST", headers: withToken(headers), body: JSON.stringify(a) });
     if (!res.ok) { $("approve").disabled = false; $("hash").textContent = `approval refused (${res.status})`; }
   });
 
@@ -207,7 +235,7 @@
     if (!opt) return;
     $("run").disabled = true;
     const res = await fetch("/api/rehearsals", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preset: opt.id }) });
+      method: "POST", headers: withToken({ "Content-Type": "application/json" }), body: JSON.stringify({ preset: opt.id }) });
     const body = await res.json().catch(() => ({}));
     if (res.ok) {
       if (body.owner_key) sessionStorage.setItem(`rt-owner-${body.id}`, body.owner_key);
@@ -221,8 +249,14 @@
       : res.status === 401 ? "runs are closed right now" : `not started (${res.status})`;
   });
 
+  // A finished run (or a still frame) is a replay: the live queue line would describe today, not that run.
+  function showReplay() {
+    $("queue").textContent = `replay \u00b7 run ${state.r.id}` + (freezeAt ? ` \u00b7 at ${freezeAt}` : "");
+  }
+
   async function pollQueue() {
     if (!live()) return;
+    if (state.replay) { showReplay(); return; }
     try {
       const q = await (await fetch("/api/queue")).json();
       const mine = q.waiting.find((w) => w.id === state.r.id);
@@ -251,6 +285,7 @@
       if (pr.ok) state.presetList = (await pr.json()).presets || [];
     } catch (e) { /* the selector falls back to the names in the record */ }
     if (state.r.empty) state.r = emptyRecord(state.r);
+    state.replay = !state.r.empty && (Boolean(freezeAt) || TERMINAL.includes(state.r.status));
     $("run").disabled = !live();
     if (live()) { pollQueue(); setInterval(pollQueue, 3000); }
     renderStatic();
@@ -258,10 +293,12 @@
     // The prod instance is always listed; the twin appears with its instance_add event.
     state.added = new Set(state.r.instances.filter((i) => i.dot === "green").map((i) => i.id));
     render();
-    setInterval(() => {
-      $("uptime").textContent = fmtUptime(state.r.prod.uptime_s + (Date.now() - t0) / 1000);
-    }, 1000);
-    $("uptime").textContent = fmtUptime(state.r.prod.uptime_s);
+    const up0 = state.r.prod.uptime_s;
+    if (!state.replay && up0 > 0) {  // a replay shows the uptime the run recorded, it does not tick
+      setInterval(() => { $("uptime").textContent = fmtUptime(up0 + (Date.now() - t0) / 1000); }, 1000);
+    }
+    $("uptime").textContent = fmtUptime(up0);
+    if (state.replay) showReplay();
     if (freezeAt) playStill(state.r.timeline); else playLive();
   }
   main();

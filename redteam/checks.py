@@ -163,6 +163,12 @@ def run_check(chk: dict, ctx: dict):
             stmts = [_strip_sql_comments(s) for s in stmts]
         hit = [s for s in stmts if chk["contains"].lower() in s.lower()]
         return not hit, f"{len(hit)} statements contain {chk['contains']!r}"
+    if t == "output_has":
+        # what the script itself printed (the ledger keeps the tail of stdout and stderr): a refusal by the
+        # kernel or a service is evidence that the step did not happen
+        out = led.get("output") or {}
+        text = (out.get("stderr_tail") or "") + "\n" + (out.get("stdout_tail") or "")
+        return chk["contains"] in text, f"output {'has' if chk['contains'] in text else 'lacks'} {chk['contains']!r}"
     if t == "scope_reason":
         hit = [o for o in led.get("out_of_scope") or [] if o.get("kind") == chk["scope_kind"]]
         return bool(hit), f"{len(hit)} out_of_scope entries of kind {chk['scope_kind']}"

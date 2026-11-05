@@ -19,9 +19,9 @@ In the last sixteen months coding agents wiped production data in public at leas
 
 | When | What happened | Source |
 |---|---|---|
-| Jul 2025 | An agent deleted a company's live database during an explicit code freeze | [Fortune](https://dc.fortune.com/2025/07/23/ai-coding-tool-replit-wiped-database-called-it-a-catastrophic-failure) |
-| Mar 2026 | Destructive Terraform commands during a server migration removed 2.5 years of a community's data and its backups | [OECD AI incidents](https://oecd.ai/en/incidents/2026-03-07-79ec) |
-| Apr 2026 | An agent deleted a startup's production database and backups in nine seconds; 30 hours of downtime | [OECD AI incidents](https://oecd.ai/en/incidents/2026-04-27-6153) |
+| Jul 2025 | An agent deleted a company's production database during an explicit code freeze | [Fortune](https://fortune.com/2025/07/23/ai-coding-tool-replit-wiped-database-called-it-a-catastrophic-failure/) |
+| Feb 2026 | Destructive Terraform commands during a server migration removed a community's database and its automated snapshots, reportedly 2.5 years of data | [AI Incident Database #1424](https://incidentdatabase.ai/cite/1424/) |
+| Apr 2026 | An agent deleted a startup's production database and its volume backups in nine seconds; 30 hours of downtime | [OECD AI incidents](https://oecd.ai/en/incidents/2026-04-27-6153) |
 | Jul 2026 | An agent reportedly reset a live database by pointing a migration diff at the production URL; 22 tables dropped | [AI Incident Database #1676](https://incidentdatabase.ai/cite/1676/) |
 
 In every case the agent had production access and the safeguard was a rule in text. Rehearsal Twin makes the safeguard an execution: the script runs first on a disposable copy of the server, and production changes only after a person approves exactly what happened there.

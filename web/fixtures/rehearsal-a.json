@@ -36,7 +36,7 @@
  },
  "twin": {
   "label": "twin-7f2",
-  "subtitle": "Vultr VM from snapshot · VPC-only · no keys"
+  "subtitle": "Vultr VM from snapshot · VPC-only · no real secrets"
  },
  "twin_ledger": {
   "files": {

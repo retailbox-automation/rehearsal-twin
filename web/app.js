@@ -237,7 +237,7 @@
   function emptyRecord(r) {  // live, nothing rehearsed yet: an idle screen with the run button
     const names = (r.preset_options || []).map((o) => o.name);
     return Object.assign({ script: { name: "", lines: [] }, scope: { paths: [], tables: {}, hosts: [] },
-      presets: names, preset: names[0], twin: { label: "twin", subtitle: "Vultr VM from snapshot \u00b7 VPC-only \u00b7 no keys" },
+      presets: names, preset: names[0], twin: { label: "twin", subtitle: "Vultr VM from snapshot \u00b7 VPC-only \u00b7 no real secrets" },
       prod: { name: "prod", uptime_s: 0 }, twin_ledger: { ledger_sha256: "" }, ledger_view: [], instances: [],
       summary: {}, timeline: [] }, r);
   }

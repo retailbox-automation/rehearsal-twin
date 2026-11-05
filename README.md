@@ -29,7 +29,7 @@ In every case the agent had production access and the safeguard was a rule in te
 ## What it does
 
 1. An agent gets a goal (or a script) and a declared scope: the paths, tables and hosts it may touch, with optional row budgets.
-2. Rehearsal Twin creates a twin of the production server from its golden snapshot through the Vultr API. The twin sits in a private VPC with no public IP and holds no keys.
+2. Rehearsal Twin creates a twin of the production server from its golden snapshot through the Vultr API. The twin sits in a private VPC with no public IP and holds no real secrets: the only key-shaped values on it are decoys.
 3. The script runs on the twin inside a locked-down systemd service under tracers: file changes, database rows and SQL, outbound calls (recorded, never delivered), exit code and resource limits.
 4. The result is a side-effect ledger. Scope is checked by code, line by line, and re-checked on the control machine. The agent explains the ledger and proposes a safer variant, which is rehearsed again on a fresh twin.
 5. A person approves the ledger by its hash. A narrow executor applies the approved script to production with the same tracers and compares predicted against actual.
@@ -46,7 +46,7 @@ In every case the agent had production access and the safeguard was a rule in te
 
 ## Containment
 
-- The twin has no public IPv4 and holds no keys. Secrets reach the model only as placeholders such as `<secret:env.NAME>`.
+- The twin has no public IPv4 and holds no real secrets (the key-shaped values on it are decoys). Secrets reach the model only as placeholders such as `<secret:env.NAME>`.
 - The script runs as a transient systemd service: `IPAddressDeny=any` with an allowlist of localhost and the control machine, network and admin capabilities dropped, cgroupfs read-only, memory, task and wall-clock limits. Live test on a twin: outbound `curl` fails; `iptables -F`, `ip route`, moving to the root cgroup, `ping` and `nsenter` into PID 1's network are all refused; deleting files inside the declared scope works.
 - Outbound calls are redirected to a local recorder that logs method, host, path and size and answers 503, so nothing is delivered.
 - Decoys with unique tokens (a fake key file, a fake API key row, a fake purge URL) show when a script reads or tries to send them.

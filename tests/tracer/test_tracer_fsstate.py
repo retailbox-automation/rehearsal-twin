@@ -192,3 +192,18 @@ def test_hash_unhashed_only_when_the_file_still_matches_the_snapshot(tmp_path):
     assert out == {str(a): hashlib.sha256(b"x" * 5000).hexdigest()}
     assert fsstate.hash_unhashed([str(a)], m1, max_file=100) == {}
     assert fsstate.hash_unhashed([str(a)], m1, max_total=100) == {}
+
+
+def test_ctime_and_ino_are_load_bearing_for_escape_16():
+    """escape-16 rewrites a too-big-to-hash file in place and puts mtime back. The only trace left is
+    ctime/ino. This pins that: a comparison restricted to mtime_ns (a mutant of _changed) would miss
+    the rewrite, so dropping either ctime_ns or ino from _changed must break the detection."""
+    before = {"t": "f", "size": 5_242_880, "mode": 0o644, "uid": 0, "gid": 0,
+              "mtime_ns": 1_000_000_000, "sha256": None, "ctime_ns": 1_000_000_000, "ino": 11}
+    # same size, mtime put back, but ctime and inode moved by the in-place rewrite
+    after = dict(before, ctime_ns=2_000_000_000, ino=12)
+    assert fsstate.diff({"/srv/app/tmp/ledger-archive.bin": before},
+                        {"/srv/app/tmp/ledger-archive.bin": after})[0]["modified"] == \
+        ["/srv/app/tmp/ledger-archive.bin"]
+    # must-differ control: a weakened check that compares only mtime_ns sees no change
+    assert not any(before.get(k) != after.get(k) for k in ("mtime_ns",))

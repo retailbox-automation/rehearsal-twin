@@ -58,9 +58,12 @@ def sandbox_refused(paths):
 
 
 ATTACKS = []  # list of (id, class, title, script_body, checks, extra_expect_fields)
+SETUP = {}    # id -> setup.sh body: runs as root outside the sandbox before the before-snapshot
 
 
-def add(id, cls, title, body, checks, **extra):
+def add(id, cls, title, body, checks, setup=None, **extra):
+    if setup is not None:
+        SETUP[id] = setup
     ATTACKS.append((id, cls, title, body, checks, extra))
 
 
@@ -118,9 +121,11 @@ add("resource-07-term-ignoring-daemon", "resource", "Ignores TERM/HUP, leaves a 
 trap '' TERM HUP INT
 (setsid bash -c 'trap "" TERM HUP; : rt-l4-mark; sleep 3600' >/dev/null 2>&1 &)
 sleep 3600
-""", [chk("limit", "wall limit hit and recorded", B, keys=["wall_exceeded"]),
-      chk("limit_eq", "no process left in the scope after the kill", B, key="leftover_processes", value=0)],
+""", [chk("limit", "wall limit hit and recorded", B, keys=["wall_exceeded"])],
     limits={"wall": 5, "mem": "256M", "pids": 128})
+# The detached daemon is caught by the runner's global survivors check (marked by rt-l4-mark and by the
+# attack's own script path), a must/breakthrough check, so the old limit_eq leftover_processes line
+# (a field the service-mode ledger never carries) is dropped. Same shape as resource-02.
 
 # ------------------------------------------------------------------ network egress
 def net(id, title, body, checks, **extra):
@@ -539,12 +544,18 @@ BIG_FILE = "/srv/app/tmp/ledger-archive.bin"
 esc("escape-16-big-file-mtime-restore",
     "Rewrite a file larger than the hash limit in place and put its mtime back", """
 f=%s
-[ -s "$f" ] || { head -c 5242880 /dev/zero | tr '\\0' 'A' > "$f"; }
 m=$(stat -c %%Y "$f")
 head -c 5242880 /dev/zero | tr '\\0' 'B' > "$f"
 touch -d "@$m" "$f"
 """ % BIG_FILE, [chk("file_listed", "the in-place rewrite of the large file is seen", B, op="modified",
-                     path=BIG_FILE)])
+                     path=BIG_FILE)],
+    # The large file must already exist in the baseline, so a rewrite shows as "modified", not "created".
+    # setup.sh plants it as root, outside the sandbox, before the before-snapshot.
+    setup="""
+f=%s
+mkdir -p "$(dirname "$f")"
+head -c 5242880 /dev/zero | tr '\\0' 'A' > "$f"
+""" % BIG_FILE)
 
 # ORCH point 2: persistence writes under /etc. These are tracked (so they are listed on main) but the fix
 # makes /etc read-only under ProtectSystem=strict, so the kernel refuses them. Either outcome is acceptable.
@@ -613,6 +624,9 @@ def write_all():
         d.mkdir()
         (d / "attack.sh").write_text(HDR + body.strip() + "\n")
         (d / "attack.sh").chmod(0o755)
+        if id in SETUP:
+            (d / "setup.sh").write_text(HDR + SETUP[id].strip() + "\n")
+            (d / "setup.sh").chmod(0o755)
         exp = {"id": id, "class": cls, "title": title, "checks": checks}
         exp.update(extra)
         (d / "expect.json").write_text(json.dumps(exp, indent=2) + "\n")
@@ -637,6 +651,12 @@ def write_some(ids):
         if not d.is_dir():
             raise SystemExit(f"{d} does not exist: only attacks already in the open set are re-rendered")
         (d / "attack.sh").write_text(HDR + body.strip() + "\n")
+        setup_f = d / "setup.sh"
+        if aid in SETUP:
+            setup_f.write_text(HDR + SETUP[aid].strip() + "\n")
+            setup_f.chmod(0o755)
+        elif setup_f.exists():
+            setup_f.unlink()
         exp = {"id": aid, "class": cls, "title": title, "checks": checks}
         exp.update(extra)
         (d / "expect.json").write_text(json.dumps(exp, indent=2) + "\n")

@@ -310,6 +310,18 @@ def rehearse(t: Target, exp: dict) -> dict:
     sc = f"{WORK}/{aid}.scope.json"
     facts = {"flow": {"ok": True, "failed_step": None}, "started": now_utc()}
 
+    # Optional setup.sh: runs as root on the target, OUTSIDE the sandbox, BEFORE the before-snapshot,
+    # so an attack can start from a planted precondition (e.g. a large file already on disk, which the
+    # attack then rewrites in place). Attacks with no setup.sh behave exactly as before.
+    setup_src = exp["_dir"] / "setup.sh"
+    if setup_src.exists():
+        setup = f"{WORK}/{aid}.setup.sh"
+        t.put(setup, setup_src.read_bytes(), "0755")
+        rc, _, err = t.bash(f"bash {setup}", timeout=120)
+        if rc != 0:
+            facts["flow"] = {"ok": False, "failed_step": f"setup rc={rc} {err.strip()[-120:]}"}
+            return facts
+
     def step(name, argv, out_file, timeout):
         rc, _, err = t.bash(f"{shlex.join(argv)} > {out_file}", timeout=timeout)
         body = t.get(out_file)

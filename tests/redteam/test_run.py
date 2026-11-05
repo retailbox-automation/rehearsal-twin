@@ -246,3 +246,41 @@ def test_main_accepts_save_ledgers(monkeypatch, tmp_path):
     ap_help = __import__("subprocess").run(["python3", "-I", str(rr.HERE / "run.py"), "--help"],
                                            capture_output=True, text=True).stdout
     assert "--save-ledgers DIR" in ap_help
+
+
+def test_setup_sh_runs_as_root_before_the_before_snapshot(tmp_path):
+    """escape-16 needs a planted precondition. An attack's optional setup.sh runs (outside the sandbox)
+    before `rtrace before`, so the planted file is part of the baseline."""
+    aid = "escape-16-big-file-mtime-restore"
+    d = tmp_path / "attacks" / aid
+    d.mkdir(parents=True)
+    (d / "setup.sh").write_text("#!/bin/bash\n:\n")
+    (d / "attack.sh").write_text("#!/bin/bash\n:\n")
+    exp = {"id": aid, "class": "escape", "title": "t", "checks": [], "_dir": d}
+    stand = _FakeStand()
+    rr.rehearse(stand, exp)
+    flat = [" ".join(c) for c in stand.calls]
+    setup_i = next(i for i, c in enumerate(flat) if f"{rr.WORK}/{aid}.setup.sh" in c and "cat >" not in c)
+    before_i = next(i for i, c in enumerate(flat) if "before" in c and "--scope" in c)
+    assert setup_i < before_i
+
+
+def test_setup_sh_failure_stops_the_attack_before_the_snapshot(tmp_path):
+    aid = "escape-16-big-file-mtime-restore"
+    d = tmp_path / "attacks" / aid
+    d.mkdir(parents=True)
+    (d / "setup.sh").write_text("#!/bin/bash\nexit 1\n")
+    (d / "attack.sh").write_text("#!/bin/bash\n:\n")
+    exp = {"id": aid, "class": "escape", "title": "t", "checks": [], "_dir": d}
+
+    class _FailSetup(_FakeStand):
+        def exec(self, argv, input=None, timeout=120):
+            if argv[:2] == ["bash", "-c"] and argv[2] == f"bash {rr.WORK}/{aid}.setup.sh":
+                self.calls.append(list(argv))
+                return 1, "", "boom"
+            return super().exec(argv, input=input, timeout=timeout)
+
+    stand = _FailSetup()
+    facts = rr.rehearse(stand, exp)
+    assert facts["flow"]["ok"] is False and facts["flow"]["failed_step"].startswith("setup")
+    assert not any("before" in " ".join(c) and "--scope" in " ".join(c) for c in stand.calls)

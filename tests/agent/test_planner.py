@@ -216,11 +216,13 @@ def test_prompt_asks_for_literals_not_required_variables(name):
 
 def test_explain_masks_unregistered_secrets_in_sql_before_the_model(fake, client):
     fake.reply(json.dumps(GOOD_EXPLAIN))
-    ledger = dict(LEDGER_A, sql=[{"statement": "ALTER ROLE shop PASSWORD 'Pr0dPassw0rd!'"},
-                                 {"statement": "UPDATE api_keys SET token = 'tok_" "live_9f8e7d6c5b4a'"}])
-    Planner(client).explain(ledger, SCOPE_A, "PGPASSWORD=hunter2" "isbad psql shop")
+    # Synthetic samples assembled at run time (secret scanners, push protection); same text as before.
+    role_pw, token, pg = "Pr0dPassw0rd" + "!", "tok_" + "live_" + "9f8e7d6c5b4a", "hunter2" + "isbad"
+    ledger = dict(LEDGER_A, sql=[{"statement": f"ALTER ROLE shop PASSWORD '{role_pw}'"},
+                                 {"statement": f"UPDATE api_keys SET token = '{token}'"}])
+    Planner(client).explain(ledger, SCOPE_A, f"PGPASSWORD={pg} psql shop")
     raw = json.dumps(fake.requests[0]["body"])
-    for leaked in ("Pr0dPassw0rd!", "tok_" "live_9f8e7d6c5b4a", "hunter2" "isbad"):
+    for leaked in (role_pw, token, pg):
         assert leaked not in raw, leaked
     assert "<secret:sql-password>" in raw and "<secret:kv.token>" in raw
 

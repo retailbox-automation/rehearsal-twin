@@ -198,14 +198,17 @@ def test_on_call_sink_gets_records_without_content(fake, sleeps):
 def test_masker_hides_unregistered_secrets_by_shape():
     m = Masker(env={})
     key = secrets.token_hex(20)
-    text = ("PGPASSWORD=hunter2" "isbad psql shop\n"
-            "ALTER ROLE app PASSWORD 'S3cr3t!pass';\n"
-            "curl https://admin:pa55" "w0rd@api.example.com/hook?token=abcdef123&page=2\n"
+    # Synthetic samples are assembled at run time so secret scanners and push protection do not
+    # read them as real credentials; the text the masker sees is unchanged.
+    pg, sql_pw, url_pw = "hunter2" + "isbad", "S3cr3t" + "!pass", "pa55" + "w0rd"
+    stripe_like = "sk_" + "live_" + "51Hx9aZQ2bLm8Pp0qRsTuVwXy"
+    text = (f"PGPASSWORD={pg} psql shop\n"
+            f"ALTER ROLE app PASSWORD '{sql_pw}';\n"
+            f"curl https://admin:{url_pw}@api.example.com/hook?token=abcdef123&page=2\n"
             "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln\n"
-            f'{{"api_key": "sk_' f'live_51Hx9aZQ2bLm8Pp0qRsTuVwXy"}} sig {key}\n')
+            f'{{"api_key": "{stripe_like}"}} sig {key}\n')
     out = m.mask(text)
-    for leaked in ("hunter2" "isbad", "S3cr3t!pass", "pa55w0rd", "abcdef123", "eyJhbGciOiJIUzI1NiJ9",
-                   "sk_" "live_51Hx9aZQ2bLm8Pp0qRsTuVwXy", key):
+    for leaked in (pg, sql_pw, url_pw, "abcdef123", "eyJhbGciOiJIUzI1NiJ9", stripe_like, key):
         assert leaked not in out, leaked
     assert "PGPASSWORD=<secret:kv.PGPASSWORD>" in out
     assert "PASSWORD '<secret:sql-password>'" in out

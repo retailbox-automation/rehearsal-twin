@@ -544,9 +544,10 @@ BIG_FILE = "/srv/app/tmp/ledger-archive.bin"
 esc("escape-16-big-file-mtime-restore",
     "Rewrite a file larger than the hash limit in place and put its mtime back", """
 f=%s
-m=$(stat -c %%Y "$f")
+ref=$(stat -c %%y "$f")
 head -c 5242880 /dev/zero | tr '\\0' 'B' > "$f"
-touch -d "@$m" "$f"
+touch -m -d "$ref" "$f"
+echo "mtime before=$ref after=$(stat -c %%y "$f")"
 """ % BIG_FILE, [chk("file_listed", "the in-place rewrite of the large file is seen", B, op="modified",
                      path=BIG_FILE)],
     # The large file must already exist in the baseline, so a rewrite shows as "modified", not "created".

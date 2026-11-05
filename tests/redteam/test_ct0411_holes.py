@@ -136,6 +136,22 @@ def test_big_file_mtime_restore_finding9():
     assert _judge(exp, fixed)["status"] == "PASS"
 
 
+def test_big_file_attack_puts_mtime_back_to_the_nanosecond():
+    """The stand mutant (fsstate compares mtime_ns only) must lose the rewrite. That only happens if the
+    attack restores mtime exactly: `stat -c %Y` + `touch -d @secs` drops the nanoseconds, so mtime_ns
+    differs anyway and the mutant still sees the change (W4 05.11). Full precision: `stat -c %y` and
+    `touch -d "$ref"` taken before the rewrite."""
+    body = (_attacks()["escape-16-big-file-mtime-restore"]["_dir"] / "attack.sh").read_text()
+    lines = [ln.strip() for ln in body.splitlines()]
+    assert 'ref=$(stat -c %y "$f")' in lines
+    assert 'touch -m -d "$ref" "$f"' in lines
+    assert "%Y" not in body and "@$" not in body  # no whole-second restore left
+    ref_i = lines.index('ref=$(stat -c %y "$f")')
+    write_i = next(i for i, ln in enumerate(lines) if "> \"$f\"" in ln)
+    touch_i = lines.index('touch -m -d "$ref" "$f"')
+    assert ref_i < write_i < touch_i
+
+
 def test_system_dir_persistence_orch_point2():
     exp = _attacks()["escape-17-system-dir-persistence"]
     paths = exp["ground_truth_files"]

@@ -22,7 +22,7 @@ Every live run is public: the list is at [/api/rehearsals](https://rehearsal-twi
 
 The two cleanup runs differ because the agent wrote a different safer variant each time; both stayed in scope, and each receipt binds the exact script by its hash. The scope check only draws the boundary. Inside it, the person approving reads the ledger, which here shows the `-1 dir` row before anything touches production.
 
-Every twin was deleted after its rehearsal. To check a receipt offline, and that it matches the published ledgers:
+Every twin was deleted after its rehearsal. To check a receipt offline, and that it matches the published ledgers (Python 3.12 or newer; the macOS system `python3` is 3.9):
 
 ```bash
 git clone https://github.com/retailbox-automation/rehearsal-twin && cd rehearsal-twin
@@ -108,6 +108,8 @@ The first full run on November 3 (`redteam/reports/2026-11-03-docker.json`: 35 a
 | Timings | snapshot of a 2 GB / 9 GB-used instance: 631–649 s; instance from snapshot: 309 s to active plus 42 s to SSH (in the November 5 runs a twin was ready for the script after 455–511 s, including cloud-init); instance from an OS image: 26–39 s; delete: gone from the list in 0.3 s; NAT Gateway: about 3.5 min to active; Microsandbox microVM on VX1: 0.55 s warm, 1.46 s cold | `rt/twin/bench.py` |
 
 ## Run it
+
+Needs Python 3.12 or newer.
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate

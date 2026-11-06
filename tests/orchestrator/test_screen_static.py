@@ -63,3 +63,16 @@ def test_a_server_error_event_does_not_end_the_stream():
     # an SSE event named "error" (a failed step) is a MessageEvent with data; closing on it lost "done"
     assert "src.onerror = (e) => { if (e.data === undefined) src.close(); };" in APP
     assert "src.onerror = () => src.close();" not in APP
+
+
+def test_until_stops_a_replay_at_one_event():
+    # ?until=N shows one moment of a run (e.g. attempt 1's ledger) and stops: digits only, read once
+    assert 'const until = /^\\d+$/.test(qs.get("until") || "") ? Number(qs.get("until")) : null;' in APP
+    # every listener that renders checks the stop flag first and offers to stop after rendering
+    assert APP.count("if (state.stopped) return;") == 3  # typed events, view, done
+    assert APP.count("stopHere(m)") == 2
+    assert "src.close(); state.stopped = true; state.replay = true;" in APP
+    # a stopped replay cannot approve or reject and says where it stopped
+    assert '$("approve").disabled = past || Boolean(ended) || state.stopped;' in APP
+    assert '$("reject").disabled = past || Boolean(ended) || state.stopped;' in APP
+    assert "Replay stopped at event ${until}" in APP

@@ -4,6 +4,8 @@
   const rid = asked || "latest";            // live: the newest rehearsal; fixture: falls back to "a"
   const freezeAt = qs.get("at");            // render a still frame at this step, no streaming
   const pace = qs.get("pace");              // forwarded to the event stream
+  // stop a replay after this event id (e.g. the first attempt's ledger), so a link can show one moment of a run
+  const until = /^\d+$/.test(qs.get("until") || "") ? Number(qs.get("until")) : null;
   const $ = (id) => document.getElementById(id);
   const STEPS = ["rehearse", "review", "apply", "compare"];
 
@@ -171,9 +173,10 @@
     $("receipt-label").textContent = noReceipt ? "No receipt" : "Receipt";
     const past = STEPS.indexOf(state.step) >= 2;
     const ended = state.done ? ENDED_TEXT[state.finalStatus] || "" : "";
-    $("approve").disabled = past || Boolean(ended);
-    $("reject").disabled = past || Boolean(ended);
-    $("approve").textContent = state.r.status === "diverged" ? "Applied — PROD DIVERGED"
+    $("approve").disabled = past || Boolean(ended) || state.stopped;
+    $("reject").disabled = past || Boolean(ended) || state.stopped;
+    $("approve").textContent = state.stopped ? `Replay stopped at event ${until}`
+      : state.r.status === "diverged" ? "Applied — PROD DIVERGED"
       : past ? "Approved — applied to PROD" : ended || "Approve safer variant";
     $("approve").classList.toggle("diverged", state.r.status === "diverged");
   }
@@ -205,11 +208,16 @@
   function playLive() {
     state.animate = true;
     const src = new EventSource(`/api/rehearsals/${encodeURIComponent(state.r.id || rid)}/events${pace !== null ? `?pace=${encodeURIComponent(pace)}` : ""}`);
+    const stopHere = (m) => {  // ?until=N: close the stream once event N has been shown
+      if (until === null || !(Number(m.lastEventId) >= until)) return;
+      src.close(); state.stopped = true; state.replay = true; showReplay(); renderActions();
+    };
     const types = ["step", "instance_add", "instance_remove", "ledger_row", "twin_summary", "prod_counters", "explain"];
     for (const t of types) {
-      src.addEventListener(t, (m) => { reduce(t, JSON.parse(m.data)); render(); });
+      src.addEventListener(t, (m) => { if (state.stopped) return; reduce(t, JSON.parse(m.data)); render(); stopHere(m); });
     }
     src.addEventListener("view", (m) => {  // live mode: the record as built from the real ledgers
+      if (state.stopped) return;
       const v = JSON.parse(m.data);
       if (state.r && v.view_key !== state.r.view_key) {
         document.querySelector("#ledger tbody").replaceChildren();
@@ -217,9 +225,10 @@
         state.summary = false;
       }
       state.r = Object.assign(v, { timeline: state.r ? state.r.timeline : [] });
-      renderStatic(); render();
+      renderStatic(); render(); stopHere(m);
     });
     src.addEventListener("done", (m) => {
+      if (state.stopped) return;
       src.close(); state.replay = true; state.done = true;
       try { state.finalStatus = JSON.parse(m.data).status || state.finalStatus; } catch (e) { /* keep the status from the record */ }
       showReplay(); renderActions();
@@ -265,7 +274,8 @@
 
   // A finished run (or a still frame) is a replay: the live queue line would describe today, not that run.
   function showReplay() {
-    $("queue").textContent = `replay \u00b7 run ${state.r.id}` + (freezeAt ? ` \u00b7 at ${freezeAt}` : "");
+    $("queue").textContent = `replay \u00b7 run ${state.r.id}` + (freezeAt ? ` \u00b7 at ${freezeAt}` : "")
+      + (state.stopped ? ` \u00b7 stopped at event ${until}` : "");
   }
 
   async function pollQueue() {

@@ -556,7 +556,7 @@ def summarize(results: list) -> dict:
     for r in results:
         by_class[r["class"]] = by_class.get(r["class"], 0) + 1
     return {"attacks": n, "breakthroughs": bt, "by_status": cnt, "by_class": by_class,
-            "line": f"{n} атак · {bt} прорывов"}
+            "line": f"{n} attacks · {bt} breakthroughs"}
 
 
 def main(argv=None) -> int:

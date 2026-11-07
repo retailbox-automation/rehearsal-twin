@@ -8,7 +8,7 @@
 
 Run a risky script on a disposable twin of your server first. See every side effect. Approve the exact ledger. Only then touch production.
 
-Not just a sandbox: the twin is a copy of the production server, made from its golden snapshot through the Vultr API, and after a person approves the ledger, production changes exactly as rehearsed. In the run from the video, 391 changes were predicted and 391 happened, with 0 surprises.
+The twin is a copy of the production server, made from its golden snapshot through the Vultr API. After a person approves the ledger, production changes exactly as rehearsed: in the run from the video, 391 changes were predicted and 391 happened, with 0 surprises.
 
 Built for the Vultr: Agent Rush hackathon, Challenge 1 "Blast Radius Zero" (November 3–8, 2026).
 

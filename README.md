@@ -3,7 +3,7 @@
 [![live runs on Vultr](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Frehearsal-twin.retailbox-automation.com%2Fapi%2Fstats&query=%24.runs&label=live%20runs%20on%20Vultr&color=2ea44f)](https://rehearsal-twin.retailbox-automation.com/api/stats)
 [![predicted = happened](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Frehearsal-twin.retailbox-automation.com%2Fapi%2Fstats&query=%24.matched&label=predicted%20%3D%20happened&suffix=%20applied%20runs&color=2ea44f)](https://rehearsal-twin.retailbox-automation.com/api/stats)
 [![red team](https://img.shields.io/badge/red%20team-58%20attacks%20run%2C%200%20escapes-2ea44f)](redteam/reports/2026-11-05-summary.json)
-[![tests](https://img.shields.io/badge/tests-520%20passing-2ea44f)](tests)
+[![tests](https://img.shields.io/badge/tests-577%20passing-2ea44f)](tests)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Run a risky script on a disposable twin of your server first. See every side effect. Approve the exact ledger. Only then touch production.
@@ -12,14 +12,14 @@ The twin is a copy of the production server, made from its golden snapshot throu
 
 Built for the Vultr: Agent Rush hackathon, Challenge 1 "Blast Radius Zero" (November 3–8, 2026).
 
-Live demo: https://rehearsal-twin.retailbox-automation.com · Slides: [docs/slides.pdf](docs/slides.pdf) · The run shown in the video: [containment moment](https://rehearsal-twin.retailbox-automation.com/?id=92b8c5f42e86&until=28), [whole run](https://rehearsal-twin.retailbox-automation.com/?id=92b8c5f42e86), [record](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/92b8c5f42e86), [receipt](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/92b8c5f42e86/receipt) · The model writing the script from a goal: [record](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/fb6a2121c9a2), [receipt](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/fb6a2121c9a2/receipt)
+The run shown in the video: [containment moment](https://rehearsal-twin.retailbox-automation.com/?id=92b8c5f42e86&until=28), [whole run](https://rehearsal-twin.retailbox-automation.com/?id=92b8c5f42e86), [record](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/92b8c5f42e86), [receipt](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/92b8c5f42e86/receipt), [check the receipt in your browser](https://rehearsal-twin.retailbox-automation.com/verify?id=92b8c5f42e86) · Start your own run: https://rehearsal-twin.retailbox-automation.com · Slides: [docs/slides.pdf](docs/slides.pdf) · The model writing the script from a goal: [record](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/fb6a2121c9a2), [receipt](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/fb6a2121c9a2/receipt)
 
 ## Judge it in 90 seconds
 
 1. **The containment moment.** Open [`/?id=92b8c5f42e86&until=28`](https://rehearsal-twin.retailbox-automation.com/?id=92b8c5f42e86&until=28). The replay stops after attempt 1 on the twin: 221 files deleted, 71 of them outside the declared scope, the purge call blocked with 0 bytes delivered, production 0 / 0.
-2. **Production changes exactly as rehearsed.** Open [the whole run](https://rehearsal-twin.retailbox-automation.com/?id=92b8c5f42e86): the agent's safer variant on a fresh twin, a person's approval of that ledger by its hash, then production: 391 predicted, 391 happened, 0 surprises.
+2. **Production changes exactly as rehearsed.** Open [the whole run](https://rehearsal-twin.retailbox-automation.com/?id=92b8c5f42e86): the agent's safer variant on a fresh twin, a person's approval of that ledger by its hash, then production: 391 predicted, 391 happened, 0 surprises. The screen shows 150 files, the cache directory (`-1 dir`) and 240 rows: that is the 391, `compare.counts` in the record.
 3. **The receipt is signed.** Check it in your browser at [`/verify?id=92b8c5f42e86`](https://rehearsal-twin.retailbox-automation.com/verify?id=92b8c5f42e86), or offline with the command [below](#evidence-from-live-runs-on-vultr-november-56-2026-golden-snapshot-8b5e1c58). Change one number in it and the check fails.
-4. **Run your own.** On the [demo screen](https://rehearsal-twin.retailbox-automation.com) pick a preset (`cleanup.sh`, `migrate_0042.sh` or `reprice_winter.sh`) and press Run, no token needed. When the ledger is ready, approve it from the same browser tab. A run takes about 17 minutes: the safer variant is rehearsed on a second twin, and each twin needs about 8 minutes from the snapshot before the script can run. The video cuts those waits.
+4. **Run your own.** On the [demo screen](https://rehearsal-twin.retailbox-automation.com) pick a preset (`cleanup.sh`, `migrate_0042.sh` or `reprice_winter.sh`) and press Run, no token needed. When the ledger is ready, approve it from the same browser tab: approval works only in the tab that started the run, and on someone else's run the screen says `approval refused (401)`. A run takes about 17 minutes: the safer variant is rehearsed on a second twin, and each twin needs about 8 minutes from the snapshot before the script can run. The video cuts those waits.
 
 Limits for judge runs: 3 runs per hour per address, 30 per day, 2 twins at a time; runs pause by themselves when the account's pending charges reach $150. The judge path was checked on November 6: rehearsal [`2cf9f3d5e536`](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/2cf9f3d5e536) was started without the token and approved with its owner key, and production changed 391 = 391.
 
@@ -36,6 +36,8 @@ Every live run is public: the list is at [/api/rehearsals](https://rehearsal-twi
 | `reprice_winter.sh`, rehearsal `adae6c4af59d` | attempt 1 changed 93 rows against a declared budget of 31 and made 93 webhook calls, 0 bytes delivered. The agent then tried to switch off the triggers behind the webhooks (`SET session_replication_role = replica`): the database role refused it twice, so those variants exited 1. Its `LIMIT 31` variant changed 31 rows but still made 31 undeclared webhook calls. The run stopped with `no_safe_variant` ("no variant stayed in scope and exited 0 in 4 attempts"). Production was not touched and no receipt was issued | [record](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/adae6c4af59d) |
 
 The two cleanup runs differ because the agent wrote a different safer variant each time; both stayed in scope, and each receipt binds the exact script by its hash. The scope check only draws the boundary. Inside it, the person approving reads the ledger, which here shows the `-1 dir` row before anything touches production.
+
+Reading a record: its `summary` describes the last attempt (see `status` and `attempts[]`). The approval with its five hashes is in `/receipt`, where `script.name` is the original script's name and `script.sha256` is the hash of the approved variant.
 
 Every twin was deleted after its rehearsal. To check a receipt offline, and that it matches the published ledgers (Python 3.12 or newer; the macOS system `python3` is 3.9):
 
@@ -64,7 +66,7 @@ In the last sixteen months coding agents wiped production data in public at leas
 | Apr 2026 | An agent deleted a startup's production database and its volume backups in nine seconds; 30 hours of downtime | [OECD AI incidents](https://oecd.ai/en/incidents/2026-04-27-6153) |
 | Jul 2026 | An agent reportedly reset a live database by pointing a migration diff at the production URL; 22 tables dropped | [AI Incident Database #1676](https://incidentdatabase.ai/cite/1676/) |
 
-In every case the agent had production access and the safeguard was a rule in text. Rehearsal Twin makes the safeguard an execution: the script runs first on a disposable copy of the server, and production changes only after a person approves exactly what happened there.
+In each case the agent could reach production directly. Rehearsal Twin puts a rehearsal in between: the script runs first on a disposable copy of the server, and production changes only after a person approves exactly what happened there.
 
 ## What it does
 
@@ -90,6 +92,7 @@ In every case the agent had production access and the safeguard was a rule in te
 - `muse-glimmer-30b` answers under a JSON schema (`response_format: json_schema`). `explain` returns a summary, notes on out-of-scope rows and a safer script; `plan` (goal mode) returns the first script from a goal, as in rehearsal `fb6a2121c9a2`. An answer that breaks the schema is retried, at most 3 times per call.
 - The model cannot change the verdict: out-of-scope rows are copied from the deterministic check (`rt/ledger/scope.py`) and the model may only attach a note to a row. Each safer script is rehearsed again on a fresh twin and re-checked on the control machine; after 3 safer attempts the run ends as `no_safe_variant` (`rt/orchestrator/core.py`).
 - Exact model allowlist, and the `model` field of every response is checked; each receipt lists the models that answered.
+- What it did in the public runs from November 5 to 7: in 7 of 7 cleanup and migration runs the model's first safer variant stayed in scope and was applied with predicted = happened; in 3 of 3 price-update runs no variant passed and nothing reached production; 49 of 49 model calls were answered by the requested model (the `llm` events in each record's timeline).
 
 ## Containment
 
@@ -129,7 +132,7 @@ Needs Python 3.12 or newer.
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
-pytest -q                                    # 520 unit and fake-cloud tests, about 25 s
+pytest -q                                    # 577 unit, fake-cloud and page tests, about 30 s
 RT_MODE=fixture uvicorn rt.api.app:app       # the screen with a recorded demo rehearsal
 ```
 

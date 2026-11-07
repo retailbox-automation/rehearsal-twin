@@ -1,12 +1,27 @@
 # Rehearsal Twin
 
+[![live runs on Vultr](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Frehearsal-twin.retailbox-automation.com%2Fapi%2Fstats&query=%24.runs&label=live%20runs%20on%20Vultr&color=2ea44f)](https://rehearsal-twin.retailbox-automation.com/api/stats)
+[![predicted = happened](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Frehearsal-twin.retailbox-automation.com%2Fapi%2Fstats&query=%24.matched&label=predicted%20%3D%20happened&suffix=%20applied%20runs&color=2ea44f)](https://rehearsal-twin.retailbox-automation.com/api/stats)
+[![red team](https://img.shields.io/badge/red%20team-58%20attacks%20run%2C%200%20escapes-2ea44f)](redteam/reports/2026-11-05-summary.json)
+[![tests](https://img.shields.io/badge/tests-520%20passing-2ea44f)](tests)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 Run a risky script on a disposable twin of your server first. See every side effect. Approve the exact ledger. Only then touch production.
+
+Not just a sandbox: the twin is a copy of the production server, made from its golden snapshot through the Vultr API, and after a person approves the ledger, production changes exactly as rehearsed. In the run from the video, 391 changes were predicted and 391 happened, with 0 surprises.
 
 Built for the Vultr: Agent Rush hackathon, Challenge 1 "Blast Radius Zero" (November 3–8, 2026).
 
 Live demo: https://rehearsal-twin.retailbox-automation.com · Slides: [docs/slides.pdf](docs/slides.pdf) · The run shown in the video: [containment moment](https://rehearsal-twin.retailbox-automation.com/?id=92b8c5f42e86&until=28), [whole run](https://rehearsal-twin.retailbox-automation.com/?id=92b8c5f42e86), [record](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/92b8c5f42e86), [receipt](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/92b8c5f42e86/receipt) · The model writing the script from a goal: [record](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/fb6a2121c9a2), [receipt](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/fb6a2121c9a2/receipt)
 
-Judges can run it: on the demo screen pick a preset (`cleanup.sh`, `migrate_0042.sh` or `reprice_winter.sh`) and press Run, no token needed, then approve your run from the same browser tab when its ledger is ready. Limits: 3 runs per hour per address, 30 per day, 2 twins at a time; runs pause by themselves when the account's pending charges reach $150. A run takes about 17 minutes, most of it booting the twin. The judge path was checked on November 6: rehearsal [`2cf9f3d5e536`](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/2cf9f3d5e536) was started without the token and approved with its owner key, and production changed 391 = 391.
+## Judge it in 90 seconds
+
+1. **The containment moment.** Open [`/?id=92b8c5f42e86&until=28`](https://rehearsal-twin.retailbox-automation.com/?id=92b8c5f42e86&until=28). The replay stops after attempt 1 on the twin: 221 files deleted, 71 of them outside the declared scope, the purge call blocked with 0 bytes delivered, production 0 / 0.
+2. **Production changes exactly as rehearsed.** Open [the whole run](https://rehearsal-twin.retailbox-automation.com/?id=92b8c5f42e86): the agent's safer variant on a fresh twin, a person's approval of that ledger by its hash, then production: 391 predicted, 391 happened, 0 surprises.
+3. **The receipt is signed.** Check it offline with the command [below](#evidence-from-live-runs-on-vultr-november-56-2026-golden-snapshot-8b5e1c58). Change one number in it and the check fails.
+4. **Run your own.** On the [demo screen](https://rehearsal-twin.retailbox-automation.com) pick a preset (`cleanup.sh`, `migrate_0042.sh` or `reprice_winter.sh`) and press Run, no token needed. When the ledger is ready, approve it from the same browser tab. A run takes about 17 minutes: the safer variant is rehearsed on a second twin, and each twin needs about 8 minutes from the snapshot before the script can run. The video cuts those waits.
+
+Limits for judge runs: 3 runs per hour per address, 30 per day, 2 twins at a time; runs pause by themselves when the account's pending charges reach $150. The judge path was checked on November 6: rehearsal [`2cf9f3d5e536`](https://rehearsal-twin.retailbox-automation.com/api/rehearsals/2cf9f3d5e536) was started without the token and approved with its owner key, and production changed 391 = 391.
 
 ## Evidence from live runs on Vultr (November 5–6, 2026, golden snapshot `8b5e1c58`)
 
@@ -114,7 +129,7 @@ Needs Python 3.12 or newer.
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
-pytest -q                                    # 519 unit and fake-cloud tests, about 25 s
+pytest -q                                    # 520 unit and fake-cloud tests, about 25 s
 RT_MODE=fixture uvicorn rt.api.app:app       # the screen with a recorded demo rehearsal
 ```
 

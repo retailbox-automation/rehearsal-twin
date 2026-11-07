@@ -25,7 +25,7 @@ Limits for judge runs: 3 runs per hour per address, 30 per day, 2 twins at a tim
 
 ## Evidence from live runs on Vultr (November 5–6, 2026, golden snapshot `8b5e1c58`)
 
-Every live run is public: the list is at [/api/rehearsals](https://rehearsal-twin.retailbox-automation.com/api/rehearsals) and the totals at [/api/stats](https://rehearsal-twin.retailbox-automation.com/api/stats), including one run on November 4 that failed before its script ran (the twin's SSH was not ready yet; fixed in `67300ab`). The runs below start from the golden snapshot of the demo production server; the video and the slides use them.
+Every live run is public: the list is at [/api/rehearsals](https://rehearsal-twin.retailbox-automation.com/api/rehearsals) and the totals at [/api/stats](https://rehearsal-twin.retailbox-automation.com/api/stats), including one run on November 4 that failed when its third twin's SSH was not ready (fixed in `67300ab`). The runs below start from the golden snapshot of the demo production server; the video and the slides use them.
 
 | Run | What happened | Check it |
 |---|---|---|

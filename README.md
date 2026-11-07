@@ -138,6 +138,15 @@ RT_MODE=fixture uvicorn rt.api.app:app       # the screen with a recorded demo r
 
 Live mode needs a Vultr account, a golden snapshot of the demo production server (`fixtures/prod/cloud-init.sh`) and a control machine: `RT_DOMAIN=<name> bash deploy/control.sh`.
 
+## Who it is for, and what it costs
+
+For a team that lets coding agents run cleanup jobs, migrations and bulk updates against a real server.
+
+- What teams use now, and what it misses: a staging server drifts from production and keeps no ledger of what changed; database branching sees the database but not files or outbound calls; a dry run or `terraform plan` shows what the script says it will do, not what it does. The twin starts from production's own snapshot, and its ledger records what actually happened, files, rows and outbound calls included.
+- Where it plugs in: `POST /api/rehearsals` with a script or a goal and a declared scope, the event stream at `/api/rehearsals/{id}/events`, `POST /api/rehearsals/{id}/approve`, then the signed receipt at `/api/rehearsals/{id}/receipt` (`rt/api/live.py`).
+- Cost, from this demo's Vultr billing (pending charges, November 7): a twin is a `vc2-1c-2gb` instance at $0.0149 an hour and each one was billed as one hour, so a two-attempt rehearsal (about 16 minutes of twin time) costs about $0.03 in compute, and a four-attempt run about $0.06. The model reads and writes 6,000 to 45,000 tokens per applied run (the `llm` events in each record). Fixed costs: the NAT Gateway the VPC-only twins need ($0.0298 an hour, $20 a month), the control machine (`vc2-2c-4gb`, $20 a month) and the golden snapshot ($0.0002 an hour).
+- Next step: `prod_state_version` hashes all tables and the watched paths of production, so any change there between rehearsal and approval returns 409. Hashing only the declared tables and paths would let unrelated writes through.
+
 ## Known limits
 
 - Goal mode, where the model writes the first script from a goal, needs the operator token and has one public run so far (`fb6a2121c9a2`). The other public runs start from the three preset scripts.

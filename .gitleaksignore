@@ -1,3 +1,6 @@
 # gitleaks false positives, reviewed 2026-11-05: a tuple of red-team attack ids, not a credential.
 ae37561a7b4fde014185cf5ea6a54b55dcd97f2d:tests/redteam/test_rebase_expectations.py:generic-api-key:10
 tests/redteam/test_rebase_expectations.py:generic-api-key:10
+# gitleaks false positives, reviewed 2026-11-07: the published Ed25519 PUBLIC key that verifies receipts (also in README), not a credential.
+web/verify.js:generic-api-key:15
+tests/web/test_verify_page.py:generic-api-key:28

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verify a receipt · Rehearsal Twin</title>
+<style>
+  :root {
+    --bg: #060f34;
+    --panel: #0b1747;
+    --panel-line: #1c2a6b;
+    --text: #e6ecfc;
+    --muted: #8d9bc9;
+    --blue: #3a87fa;
+    --blue-btn: #0761fe;
+    --green: #1ad1a3;
+    --red: #fa5561;
+    --amber: #f5b84a;
+    --field: #070f3b;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 500px at 50% 0, #0d1a52 0, transparent 70%), var(--bg);
+    color: var(--text);
+    font: 16px/1.5 Inter, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    letter-spacing: -.007em;
+  }
+  a { color: var(--blue); }
+  .top { border-bottom: 1px solid #101c58; }
+  .top-in, main { max-width: 980px; margin: 0 auto; padding: 0 16px; }
+  .top-in { display: flex; align-items: baseline; gap: 18px; padding-top: 18px; padding-bottom: 16px; flex-wrap: wrap; }
+  .brand { font-size: 28px; font-weight: 700; letter-spacing: -.3px; color: var(--text); text-decoration: none; }
+  .brand span { color: var(--blue); }
+  .top-in .back { color: var(--muted); font-size: 15px; }
+  h1 { font-size: 26px; margin: 28px 0 6px; letter-spacing: -.3px; }
+  .lead { color: var(--muted); margin: 0 0 20px; max-width: 760px; }
+  .panel { background: var(--panel); border: 1px solid var(--panel-line); border-radius: 14px; padding: 20px; margin-bottom: 18px; }
+  label { display: block; color: var(--muted); font-size: 14px; margin-bottom: 6px; }
+  .load-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 16px; }
+  .load-row .field { flex: 0 1 260px; min-width: 0; }
+  input, textarea {
+    width: 100%; background: var(--field); color: var(--text); border: 1px solid #263b87; border-radius: 10px;
+    font: 14px/1.45 var(--mono);
+  }
+  input { height: 42px; padding: 0 12px; }
+  textarea { min-height: 220px; padding: 10px 12px; resize: vertical; word-break: break-all; }
+  input:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+  button {
+    height: 42px; padding: 0 16px; border-radius: 10px; border: 1px solid #263b87; background: #10205e;
+    color: var(--text); font: 600 15px Inter, -apple-system, "Segoe UI", sans-serif; cursor: pointer;
+  }
+  button.primary { background: var(--blue-btn); border-color: var(--blue-btn); color: #fff; box-shadow: 0 0 14px rgba(7, 97, 254, .45); }
+  button:disabled { opacity: .45; cursor: default; box-shadow: none; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .note { min-height: 24px; margin: 12px 0 0; color: var(--muted); font-size: 15px; overflow-wrap: anywhere; }
+  .note.bad { color: var(--red); }
+  .status { display: inline-block; font-weight: 700; font-size: 22px; letter-spacing: .02em; padding: 4px 14px; border-radius: 9px; border: 1px solid; }
+  .status.idle { color: var(--muted); border-color: #263b87; font-weight: 600; font-size: 17px; letter-spacing: 0; }
+  .status.pass { color: var(--green); border-color: var(--green); background: rgba(26, 209, 163, .08); }
+  .status.fail { color: var(--red); border-color: var(--red); background: rgba(250, 85, 97, .08); }
+  .status.unsupported { color: var(--amber); border-color: var(--amber); background: rgba(245, 184, 74, .08); font-size: 18px; }
+  #summary { margin: 12px 0 0; }
+  #problems { margin: 6px 0 0; padding-left: 22px; color: var(--red); }
+  #problems:empty { display: none; }
+  dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 18px; margin: 16px 0 0; }
+  dl:empty { display: none; }
+  dt { color: var(--muted); font-size: 14px; }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  dd.mono, code { font-family: var(--mono); font-size: 13.5px; }
+  dd.good { color: var(--green); }
+  dd.bad { color: var(--red); }
+  .foot { color: var(--muted); font-size: 14px; margin: 0 0 40px; overflow-wrap: anywhere; }
+  @media (max-width: 560px) {
+    dl { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    dd { margin-bottom: 8px; }
+    .load-row .field { flex: 1 1 100%; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="top-in">
+    <a class="brand" href="/">Rehearsal <span>Twin</span></a>
+    <a class="back" href="/">Back to the demo</a>
+  </div>
+</header>
+
+<main>
+  <h1>Verify a receipt</h1>
+  <p class="lead">The check runs in this page with your browser's own WebCrypto. The only request it makes is the one that loads the receipt.</p>
+
+  <section class="panel">
+    <form id="load-form" class="load-row" autocomplete="off">
+      <div class="field">
+        <label for="rid">Rehearsal id</label>
+        <input id="rid" name="id" value="92b8c5f42e86" maxlength="32" spellcheck="false">
+      </div>
+      <button id="load" type="submit">Load</button>
+    </form>
+    <label for="text">Receipt (load one above or paste any receipt)</label>
+    <textarea id="text" spellcheck="false" autocomplete="off" placeholder='{"approval": ..., "signature": {...}}'></textarea>
+    <div class="actions">
+      <button id="verify" class="primary" type="button">Verify</button>
+      <button id="tamper" type="button">Change one byte and check again</button>
+      <button id="forge" type="button">Forge the signature</button>
+    </div>
+    <p id="note" class="note" aria-live="polite"></p>
+  </section>
+
+  <section class="panel" id="result" aria-live="polite">
+    <div id="status" class="status idle">Not checked yet</div>
+    <p id="summary"></p>
+    <ul id="problems"></ul>
+    <dl id="details"></dl>
+  </section>
+
+  <p class="foot">PASS needs all three: the Ed25519 signature matches the receipt's canonical JSON, the key_id belongs to the key inside the receipt, and that key is the published one: <code id="pubkey"></code> (also in the <a href="https://github.com/retailbox-automation/rehearsal-twin#judge-it-in-90-seconds">README</a>). The ledger hashes are shown, not checked here; the <a href="https://github.com/retailbox-automation/rehearsal-twin#evidence-from-live-runs-on-vultr-november-56-2026-golden-snapshot-8b5e1c58">README command</a> checks them against the published ledgers.</p>
+</main>
+<script src="/verify.js"></script>
+</body>
+</html>

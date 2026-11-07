@@ -60,6 +60,10 @@ def create_app(mode: str | None = None, orchestrator=None, run_in_background=Non
     def index() -> FileResponse:
         return FileResponse(WEB_DIR / "index.html")
 
+    @app.get("/verify")
+    def verify_page() -> FileResponse:
+        return FileResponse(WEB_DIR / "verify.html")
+
     app.mount("/", StaticFiles(directory=WEB_DIR), name="web")
     return app
 
